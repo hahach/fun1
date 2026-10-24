@@ -1,0 +1,14 @@
+{
+  "endpoint": "workspace/delete",
+  "args": {
+    "request": {
+      "workspaceId": "cbac518c-1d37-4ad0-9378-2af5bd5d4bf1"
+    }
+  },
+  "result": {
+    "ok": true,
+    "value": {
+      "deleted": true
+    }
+  }
+}

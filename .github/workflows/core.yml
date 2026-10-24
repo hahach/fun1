@@ -1,0 +1,123 @@
+name: ios-core
+
+# 平台中立的传输/协议层单测。ubuntu 分钟按 1× 计费，可以随 push 跑。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Core/**'
+      - 'ios/**'
+      - '.github/workflows/core.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-core-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: core tests (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: Core
+    steps:
+      - uses: actions/checkout@v4
+      - name: cache swiftpm
+        uses: actions/cache@v4
+        with:
+          path: Core/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('Core/Package.swift', 'Core/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+      - name: toolchain
+        run: swift --version
+      - name: test
+        run: swift test
+
+  probe:
+    name: probe (linux, real sshd)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cache swiftpm
+        uses: actions/cache@v4
+        with:
+          path: Core/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('Core/Package.swift', 'Core/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: toolchain
+        run: swift --version
+
+      - name: start sshd
+        run: |
+          sudo mkdir -p /run/sshd
+          sudo ssh-keygen -A
+          ssh-keygen -t ed25519 -f "$HOME/.ssh/probe_key" -N '' -q
+          sudo mkdir -p /root/.ssh
+          sudo tee -a /root/.ssh/authorized_keys < "$HOME/.ssh/probe_key.pub" > /dev/null
+          sudo chmod 700 /root/.ssh
+          sudo chmod 600 /root/.ssh/authorized_keys
+          sudo /usr/sbin/sshd -p 22
+          sleep 1
+
+      - name: fake dsh
+        run: |
+          sudo mkdir -p /root/.dsh
+          sudo "$(command -v node)" ./tools/fake-dsh.mjs &
+          sleep 1
+
+      - name: "probe unary"
+        timeout-minutes: 3
+        working-directory: Core
+        env:
+          DSH_DEBUG: '1'
+        run: swift run dsh-probe --user root --host 127.0.0.1 --port 22 --key "$HOME/.ssh/probe_key" --call session/list
+
+      - name: "probe stream"
+        timeout-minutes: 3
+        working-directory: Core
+        env:
+          DSH_DEBUG: '1'
+        run: swift run dsh-probe --user root --host 127.0.0.1 --port 22 --key "$HOME/.ssh/probe_key" --stream session/follow
+
+      - name: "probe tty"
+        timeout-minutes: 3
+        working-directory: Core
+        env:
+          DSH_DEBUG: '1'
+        run: swift run dsh-probe --user root --host 127.0.0.1 --port 22 --key "$HOME/.ssh/probe_key" --tty
+
+      - name: "probe reconnect"
+        timeout-minutes: 3
+        working-directory: Core
+        env:
+          DSH_DEBUG: '1'
+        run: swift run dsh-probe --user root --host 127.0.0.1 --port 22 --key "$HOME/.ssh/probe_key" --reconnect
+
+      - name: "probe restart"
+        timeout-minutes: 3
+        working-directory: Core
+        env:
+          DSH_DEBUG: '1'
+        run: swift run dsh-probe --user root --host 127.0.0.1 --port 22 --key "$HOME/.ssh/probe_key" --restart
+
+  ios-syntax:
+    name: ios syntax (linux, parse only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: swift --version
+      # 只做语法解析：真正的类型检查需要 iOS SDK，只能在 macOS 上做（10× 计费）。
+      # 这一步在 1× 的 runner 上挡住括号、字符串转义一类的低级错误。
+      - name: parse
+        run: |
+          find ios/Rowel -name "*.swift" -print0 | xargs -0 -n1 swiftc -parse

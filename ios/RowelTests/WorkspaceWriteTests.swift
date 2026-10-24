@@ -1,0 +1,1017 @@
+/// The writes, and what they leave behind when the Mac says no.
+///
+/// Every workspace mutation here shows its result before the machine has agreed
+/// to it, because a header that waits out a round trip reads as a tap that
+/// missed. That trade is only safe if the undo is real, and an undo that has
+/// never been run is an undo nobody has checked — so these tests are mostly
+/// about failure: the name goes back, the section comes back, the conversation
+/// goes back where it was, and the person is told in words.
+///
+/// The transport is stubbed rather than the harness, so the payloads asserted
+/// here are the ones a real Bridle would receive. Their shapes are the ones a
+/// real dsh 0.2 accepted (`Fixtures/dsh-0.2`), which is why the assertions name
+/// exact keys.
+
+import XCTest
+@testable import Rowel
+
+/// A transport that answers from a script and refuses on command.
+private actor StubTransport: CallOnlyTransport {
+    private struct Refusal {
+        var error: CallError
+        /// How many calls to let through before refusing the rest.
+        var after: Int
+    }
+
+    private var answers: [String: JSONValue] = [:]
+    private var refusals: [String: Refusal] = [:]
+    private var sent: [(method: String, payload: JSONValue)] = []
+
+    func answer(_ method: String, _ value: JSONValue) {
+        answers[method] = value
+    }
+
+    /// - Parameter after: calls to allow first, for the paths that make two.
+    func fail(_ method: String, code: String = "internal", message: String, after: Int = 0) {
+        refusals[method] = Refusal(error: CallError(code: code, message: message), after: after)
+    }
+
+    func payloads(_ method: String) -> [JSONValue] {
+        sent.filter { $0.method == method }.map(\.payload)
+    }
+
+    func count(_ method: String) -> Int {
+        sent.filter { $0.method == method }.count
+    }
+
+    func call(_ method: String, _ payload: JSONValue) async throws -> JSONValue {
+        let already = sent.filter { $0.method == method }.count
+        sent.append((method, payload))
+        if let refusal = refusals[method], already >= refusal.after { throw refusal.error }
+        return answers[method] ?? .emptyObject
+    }
+}
+
+// MARK: - Fixtures
+
+private func workspaceRow(_ id: String, path: String, title: String, sessions: [String] = []) -> JSONValue {
+    .object([
+        "workspaceId": .string(id),
+        "path": .string(path),
+        "title": .string(title),
+        "sessionIds": .array(sessions.map(JSONValue.string)),
+        "createdAt": .string("2026-07-25T09:41:07.000Z"),
+        "updatedAt": .string("2026-07-25T09:41:07.000Z"),
+    ])
+}
+
+/// A `workspace/follow` baseline.
+private func baseline(_ items: [JSONValue], archived: [String] = []) -> JSONValue {
+    .object([
+        "type": .string("baseline"),
+        "value": .object([
+            "items": .array(items),
+            "archivedSessionIds": .array(archived.map(JSONValue.string)),
+            "pinnedSessionIds": .array([]),
+        ]),
+    ])
+}
+
+/// What a request-wrapped call carries.
+private func request(_ fields: [String: JSONValue]) -> JSONValue {
+    .object(["request": .object(fields)])
+}
+
+private func sessionRow(_ id: String, cwd: String?, updatedAt: Double = 1_700_000_000_000) -> JSONValue {
+    .object(dropping: [
+        "sessionId": .string(id),
+        "updatedAt": .number(updatedAt),
+        "running": .bool(false),
+        "blank": .bool(false),
+        "cwd": cwd.map(JSONValue.string),
+    ])
+}
+
+@MainActor
+final class WorkspaceWriteTests: XCTestCase {
+    private var suite: UserDefaults!
+    private var suiteName: String!
+    private var stub: StubTransport!
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "rowel.workspace.tests.\(UUID().uuidString)"
+        suite = UserDefaults(suiteName: suiteName)
+        stub = StubTransport()
+    }
+
+    override func tearDown() {
+        suite.removePersistentDomain(forName: suiteName)
+        super.tearDown()
+    }
+
+    private func machine() -> MachineSession {
+        let bundle = PairingBundle(
+            relay: "https://relay.invalid",
+            device: "device-1",
+            key: "",
+            token: "",
+            name: "Test Mac"
+        )
+        // Never started, so nothing dials anything: the tunnel this builds sits
+        // idle and every call goes to the stub instead.
+        return MachineSession(
+            machine: PairedMachine(bundle: bundle),
+            identity: .generate(),
+            deviceName: "Test iPhone",
+            clientVersion: "rowel-tests/1",
+            pairingToken: nil,
+            notifier: Notifier(center: nil),
+            defaults: suite,
+            transport: stub
+        )
+    }
+
+    /// One workspace holding one conversation, plus a stray in a folder no
+    /// workspace claims. The smallest shape with something to lose.
+    private func loaded() async -> MachineSession {
+        await stub.answer("session/list", .object([
+            "items": .array([
+                sessionRow("s1", cwd: "/code/one"),
+                sessionRow("stray", cwd: "/code/two", updatedAt: 1_699_999_000_000),
+            ]),
+        ]))
+        let session = machine()
+        session.receiveForTesting(workspaces: baseline([workspaceRow("w1", path: "/code/one", title: "One", sessions: ["s1"])]))
+        await session.refreshSessions()
+        return session
+    }
+
+    // MARK: - Reading
+
+    func testTheWorkspaceBaselineIsWhatMakesTheMachineCountAsGrouping() async {
+        let session = await loaded()
+        XCTAssertTrue(session.canGroup)
+        XCTAssertEqual(session.workspaces.map(\.id), ["w1"])
+        XCTAssertEqual(session.placement(for: "/code/one"), .joins(workspaceId: "w1", title: "One"))
+    }
+
+    func testTheArchiveSetArrivesWithTheWorkspaces() async {
+        let session = machine()
+        session.receiveForTesting(workspaces: baseline([], archived: ["gone"]))
+        XCTAssertEqual(session.archivedSessionIds, ["gone"])
+    }
+
+    /// Until the workspace stream has spoken, nothing is known about grouping,
+    /// and the list has to work the same regardless.
+    func testAMachineThatHasNotDescribedItsWorkspacesStillListsItsConversationsAndSaysNothing() async {
+        await stub.answer("session/list", .object([
+            "items": .array([sessionRow("s1", cwd: "/code/one")]),
+        ]))
+        let session = machine()
+        await session.refreshSessions()
+
+        XCTAssertEqual(session.sessions.map(\.id), ["s1"], "the list is the screen; it must fill in regardless")
+        XCTAssertTrue(session.workspaces.isEmpty)
+        XCTAssertFalse(session.canGroup)
+        XCTAssertNil(session.problem, "a machine that cannot group is not a machine with a problem")
+        XCTAssertEqual(session.placement(for: "/code/one"), .unknown)
+        XCTAssertEqual(session.filing(for: session.sessions[0]), .settled)
+    }
+
+    /// After the baseline, the stream sends changes; each one applies without
+    /// a refetch.
+    func testTheStreamsChangesApply() async {
+        let session = await loaded()
+        session.receiveForTesting(workspaces: .object([
+            "type": .string("upsert"),
+            "workspace": workspaceRow("w2", path: "/code/two", title: "Two", sessions: ["stray"]),
+        ]))
+        session.receiveForTesting(workspaces: .object(["type": .string("remove"), "workspaceId": .string("w1")]))
+        session.receiveForTesting(workspaces: .object(["type": .string("archived"), "archivedSessionIds": .array([.string("s1")])]))
+
+        XCTAssertEqual(session.workspaces.map(\.id), ["w2"])
+        XCTAssertEqual(session.archivedSessionIds, ["s1"])
+        XCTAssertTrue(session.canGroup)
+    }
+
+    /// The baseline a real dsh 0.2 sent, and the archive and unarchive after it.
+    func testARecordedWorkspaceStreamApplies() async throws {
+        let session = machine()
+        let recording = try fixture("workspace-follow")
+        let items = recording["items"]?.arrayValue ?? []
+        session.receiveForTesting(workspaces: items[0])
+        XCTAssertEqual(session.workspaces.map(\.displayTitle), ["Fixture workspace"])
+        XCTAssertEqual(session.workspaces.first?.sessionIds.count, 2)
+        session.receiveForTesting(workspaces: items[1])
+        XCTAssertEqual(session.archivedSessionIds.count, 1)
+        session.receiveForTesting(workspaces: items[2])
+        XCTAssertTrue(session.archivedSessionIds.isEmpty)
+    }
+
+    // MARK: - Making one
+
+    func testClaimingAFolderSendsThePathAndAddsTheWorkspace() async {
+        let session = await loaded()
+        await stub.answer("workspace/create", .object([
+            "workspace": workspaceRow("w2", path: "/code/two", title: "two"),
+            "created": .bool(true),
+        ]))
+
+        let failure = await session.createWorkspace(path: "/code/two")
+        let sent = await stub.payloads("workspace/create")
+
+        XCTAssertNil(failure)
+        XCTAssertEqual(sent, [request(["path": .string("/code/two")])])
+        XCTAssertEqual(session.workspaces.map(\.id), ["w2", "w1"])
+        XCTAssertEqual(session.placement(for: "/code/two"), .joins(workspaceId: "w2", title: "two"))
+    }
+
+    /// The machine resolves a folder it already owns instead of erroring, and
+    /// the second answer must not put a duplicate section on screen.
+    func testClaimingAFolderThatIsAlreadyAWorkspaceChangesNothing() async {
+        let session = await loaded()
+        await stub.answer("workspace/create", .object([
+            "workspace": workspaceRow("w1", path: "/code/one", title: "One", sessions: ["s1"]),
+            "created": .bool(false),
+        ]))
+
+        let failure = await session.createWorkspace(path: "/code/one")
+        XCTAssertNil(failure)
+        XCTAssertEqual(session.workspaces.map(\.id), ["w1"])
+    }
+
+    /// Nothing is shown before the machine agrees, because there is nothing
+    /// honest to show: only the machine knows the id, and a section drawn
+    /// hopefully would be a section standing over nothing.
+    func testAFolderTheMachineRefusesAddsNoSection() async {
+        let session = await loaded()
+        await stub.fail(
+            "workspace/create",
+            code: "workspace-invalid-path",
+            message: "cannot create a workspace at \"/code/nope\": path is not a directory"
+        )
+
+        let failure = await session.createWorkspace(path: "/code/nope")
+        XCTAssertEqual(failure, "cannot create a workspace at \"/code/nope\": path is not a directory")
+        XCTAssertEqual(session.workspaces.map(\.id), ["w1"])
+        // Returned rather than banner-ed: this is done inside the folder sheet,
+        // and the banner lives on the screen behind it.
+        XCTAssertNil(session.problem)
+    }
+
+    // MARK: - Renaming
+
+    func testRenamingSendsTheIdAndTheTitle() async {
+        let session = await loaded()
+        await stub.answer("workspace/rename", .object([
+            "workspace": workspaceRow("w1", path: "/code/one", title: "Renamed", sessions: ["s1"]),
+        ]))
+
+        let renamed = await session.renameWorkspace("w1", title: "  Renamed  ")
+        let sent = await stub.payloads("workspace/rename")
+
+        XCTAssertTrue(renamed)
+        // Trimmed here as well as on the machine, so what is drawn locally and
+        // what is stored cannot disagree by a space.
+        XCTAssertEqual(sent, [request([
+            "workspaceId": .string("w1"),
+            "title": .string("Renamed"),
+        ])])
+        XCTAssertEqual(session.workspaces[0].displayTitle, "Renamed")
+    }
+
+    func testARefusedRenamePutsTheOldNameBackAndSaysWhy() async {
+        let session = await loaded()
+        await stub.fail(
+            "workspace/rename",
+            code: "workspace-name-conflict",
+            message: "workspace name 'Two' is already in use"
+        )
+
+        let renamed = await session.renameWorkspace("w1", title: "Two")
+        XCTAssertFalse(renamed)
+        XCTAssertEqual(session.workspaces[0].displayTitle, "One")
+        XCTAssertEqual(session.problem, "workspace name 'Two' is already in use")
+    }
+
+    /// Caught here rather than sent, so the empty case costs no round trip and
+    /// says something better than a schema message would.
+    func testABlankNameIsRefusedWithoutAskingTheMachine() async {
+        let session = await loaded()
+        let renamed = await session.renameWorkspace("w1", title: "   ")
+        let attempts = await stub.count("workspace/rename")
+
+        XCTAssertFalse(renamed)
+        XCTAssertEqual(attempts, 0)
+        XCTAssertEqual(session.workspaces[0].displayTitle, "One")
+        XCTAssertEqual(session.problem, "A workspace needs a name.")
+    }
+
+    // MARK: - Removing
+
+    func testRemovingAWorkspaceSendsItsIdAndDropsTheSection() async {
+        let session = await loaded()
+        let removed = await session.deleteWorkspace("w1")
+        let sent = await stub.payloads("workspace/delete")
+
+        XCTAssertTrue(removed)
+        XCTAssertEqual(sent, [request(["workspaceId": .string("w1")])])
+        XCTAssertTrue(session.workspaces.isEmpty)
+    }
+
+    /// The conversations are the point of the confirmation copy: removing a
+    /// workspace removes the grouping and nothing else, so every row has to
+    /// still be reachable afterwards.
+    func testRemovingAWorkspaceKeepsItsConversations() async {
+        let session = await loaded()
+        _ = await session.deleteWorkspace("w1")
+
+        let board = SessionBoard(sessions: session.sessions, workspaces: session.workspaces)
+        XCTAssertEqual(Set(board.groups.flatMap { $0.sessions.map(\.id) }), ["s1", "stray"])
+        XCTAssertEqual(board.groups.map(\.id), [SessionGroup.ungroupedId])
+    }
+
+    func testARefusedRemovalPutsTheSectionBack() async {
+        let session = await loaded()
+        await stub.fail("workspace/delete", code: "workspace-not-found", message: "workspace \"w1\" not found")
+
+        let removed = await session.deleteWorkspace("w1")
+        XCTAssertFalse(removed)
+        XCTAssertEqual(session.workspaces.map(\.id), ["w1"])
+        XCTAssertEqual(session.workspaces[0].sessionIds, ["s1"], "the membership has to come back with it")
+        XCTAssertEqual(session.problem, "workspace \"w1\" not found")
+    }
+
+    // MARK: - Starting a conversation in a workspace
+
+    /// Started in a workspace's folder, the conversation is started *in the
+    /// workspace*: one call, `workspaceId` alone. dsh refuses `cwd` with it,
+    /// and filing afterwards fails on dsh 0.2 — the ledger compares the two
+    /// folders as strings, and the workspace's has been resolved.
+    func testStartingInAWorkspaceFolderStartsInTheWorkspace() async {
+        let session = await loaded()
+        await stub.answer("session/create", .object(["sessionId": .string("fresh")]))
+
+        let id = await session.createSession(cwd: "/code/one")
+        let sent = await stub.payloads("session/create")
+
+        XCTAssertEqual(id, "fresh")
+        XCTAssertEqual(sent, [request(["workspaceId": .string("w1")])])
+        XCTAssertNil(session.problem)
+        let board = SessionBoard(sessions: session.sessions, workspaces: session.workspaces)
+        XCTAssertEqual(board.groups.first { $0.id == "w1" }?.sessions.first?.id, "fresh")
+    }
+
+    /// A folder nothing stands for is claimed as the conversation starts, so
+    /// that there is a workspace to start it in. Without this the conversation
+    /// sits in a folder no workspace names, and the Mac's sidebar — which reads
+    /// the ledger and nothing else — calls it ungrouped for the rest of its life.
+    func testStartingInAnUnclaimedFolderClaimsItFirst() async {
+        let session = await loaded()
+        await stub.answer("session/create", .object(["sessionId": .string("fresh")]))
+        await stub.answer("workspace/create", .object([
+            "created": .bool(true),
+            "workspace": workspaceRow("w2", path: "/code/two", title: "two"),
+        ]))
+
+        let id = await session.createSession(cwd: "/code/two")
+
+        let claims = await stub.payloads("workspace/create")
+        XCTAssertEqual(claims, [request(["path": .string("/code/two")])],
+                       "the folder the person chose, and nothing else")
+        let sent = await stub.payloads("session/create")
+        XCTAssertEqual(id, "fresh")
+        XCTAssertEqual(sent, [request(["workspaceId": .string("w2")])],
+                       "started in the workspace just made for its folder")
+        XCTAssertNil(session.problem)
+
+        let board = SessionBoard(sessions: session.sessions, workspaces: session.workspaces)
+        XCTAssertEqual(board.groups.first { $0.id == "w2" }?.sessions.map(\.id), ["fresh", "stray"],
+                       "the phone and the Mac now say the same thing about where this conversation lives, "
+                       + "and the new workspace seats the folder's other conversations too")
+    }
+
+    /// A machine that will not make the workspace is not an event. The
+    /// conversation exists, in the folder the person chose, and the board seats
+    /// it by working directory regardless — the same silence a refused join
+    /// gets, for the same reason.
+    func testAFolderTheMachineWontClaimStillStartsTheConversation() async {
+        let session = await loaded()
+        await stub.answer("session/create", .object(["sessionId": .string("fresh")]))
+        await stub.fail("workspace/create", code: "workspace-invalid-path",
+                        message: "cannot create a workspace at \"/code/two\": not a directory")
+
+        let id = await session.createSession(cwd: "/code/two")
+
+        let attempts = await stub.count("session/create")
+        let sent = await stub.payloads("session/create")
+        XCTAssertEqual(id, "fresh")
+        XCTAssertEqual(attempts, 1)
+        XCTAssertEqual(sent, [request(["cwd": .string("/code/two")])], "no workspace, so the folder itself")
+        XCTAssertEqual(session.workspaces.map(\.id), ["w1"],
+                       "a workspace the machine refused is not on the phone either")
+        XCTAssertNil(session.problem)
+    }
+
+    /// The other half of the same guard: a machine whose workspace stream has
+    /// not spoken is never asked to make one — there is no telling yet whether
+    /// the folder is already a workspace.
+    func testAMachineThatHasNotSaidItGroupsIsNeverAskedToMakeOne() async {
+        await stub.answer("session/create", .object(["sessionId": .string("fresh")]))
+        let session = machine()
+
+        let id = await session.createSession(cwd: "/code/two")
+
+        let claims = await stub.count("workspace/create")
+        let attempts = await stub.count("session/create")
+        XCTAssertEqual(id, "fresh")
+        XCTAssertEqual(claims, 0)
+        XCTAssertEqual(attempts, 1)
+        XCTAssertNil(session.problem)
+    }
+
+    // MARK: - Archiving
+
+    /// `session/list` keeps answering with archived conversations, so marking
+    /// rather than removing is what makes the archive survive a refresh. It did
+    /// not, before: the row came back the next time the list was pulled.
+    func testArchivingHidesTheConversationAndSurvivesARefresh() async {
+        let session = await loaded()
+        await session.archive(sessionId: "s1")
+        let sent = await stub.payloads("workspace/archiveSession")
+
+        XCTAssertEqual(session.archivedSessionIds, ["s1"])
+        XCTAssertEqual(sent, [request(["sessionId": .string("s1")])])
+
+        // What the machine says from here on. `session/list` keeps the row —
+        // that is the point — and only the archive set says it should be gone.
+        session.receiveForTesting(workspaces: .object(["type": .string("archived"), "archivedSessionIds": .array([.string("s1")])]))
+        await session.refreshSessions()
+        XCTAssertTrue(session.sessions.contains { $0.id == "s1" }, "the machine still reports it")
+        let board = SessionBoard(
+            sessions: session.sessions,
+            workspaces: session.workspaces,
+            archived: session.archivedSessionIds
+        )
+        XCTAssertFalse(board.groups.flatMap { $0.sessions.map(\.id) }.contains("s1"))
+    }
+
+    func testARefusedArchiveBringsTheConversationBack() async {
+        let session = await loaded()
+        await stub.fail("workspace/archiveSession", code: "session-not-found", message: "session \"s1\" not found")
+
+        await session.archive(sessionId: "s1")
+        XCTAssertTrue(session.archivedSessionIds.isEmpty)
+        XCTAssertEqual(session.problem, "session \"s1\" not found")
+    }
+}
+
+/// Choosing a model, and the header agreeing that you did.
+///
+/// The write used to live in the picker sheet, which updated its own copy of
+/// the catalogue and nothing else. `modelName` is otherwise set only from a
+/// `request/header` event — which arrives when a turn *runs* — so the header
+/// went on naming the previous model until the next message was sent. Reported
+/// from a device: picked Flash, header still said Pro.
+@MainActor
+final class ModelSelectionTests: XCTestCase {
+    private var suite: UserDefaults!
+    private var suiteName: String!
+    private var stub: StubTransport!
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "rowel.model.tests.\(UUID().uuidString)"
+        suite = UserDefaults(suiteName: suiteName)
+        stub = StubTransport()
+    }
+
+    override func tearDown() {
+        suite.removePersistentDomain(forName: suiteName)
+        super.tearDown()
+    }
+
+    private func session() -> MachineSession {
+        let bundle = PairingBundle(
+            relay: "https://relay.invalid", device: "device-1", key: "", token: "", name: "Test Mac"
+        )
+        return MachineSession(
+            machine: PairedMachine(bundle: bundle),
+            identity: .generate(),
+            deviceName: "Test iPhone",
+            clientVersion: "rowel-tests/1",
+            pairingToken: nil,
+            notifier: Notifier(center: nil),
+            defaults: suite,
+            transport: stub
+        )
+    }
+
+    private let flash = ModelOption(
+        provider: "deepseek", providerName: "DeepSeek",
+        model: "deepseek-v4-flash", name: "DeepSeek V4 Flash (latest)", description: nil
+    )
+
+    func testTheHeaderFollowsTheChoiceWithoutWaitingForATurn() async {
+        let machine = session()
+        let conversation = machine.conversation("s1")
+        conversation.setModel("DeepSeek V4 Pro (latest)")
+
+        let failure = await machine.selectModel(sessionId: "s1", option: flash, effort: "high")
+
+        XCTAssertNil(failure)
+        XCTAssertEqual(conversation.modelName, "DeepSeek V4 Flash (latest)")
+    }
+
+    func testTheEffortRidesAlongWithTheModel() async {
+        let machine = session()
+        _ = await machine.selectModel(sessionId: "s1", option: flash, effort: "max")
+
+        let sent = await stub.payloads("session/selectModel").last
+        XCTAssertEqual(sent?.path("request", "model")?.stringValue, "deepseek-v4-flash")
+        XCTAssertEqual(sent?.path("request", "reasoningEffort")?.stringValue, "max")
+    }
+
+    func testARefusedChoiceLeavesTheHeaderAlone() async {
+        // The opposite failure to the one being fixed, and the reason the
+        // update is applied on success rather than optimistically: a header
+        // naming a model the machine rejected would be worse than a stale one.
+        let machine = session()
+        let conversation = machine.conversation("s1")
+        conversation.setModel("DeepSeek V4 Pro (latest)")
+        await stub.fail("session/selectModel", code: "model-unavailable", message: "No key for that provider.")
+
+        let failure = await machine.selectModel(sessionId: "s1", option: flash, effort: nil)
+
+        XCTAssertEqual(failure, "No key for that provider.")
+        XCTAssertEqual(conversation.modelName, "DeepSeek V4 Pro (latest)")
+    }
+}
+
+/// The machine's default access mode: what a conversation that does not exist
+/// yet will start as.
+///
+/// This is the settings path (`settings/update {ns: permission, patch:
+/// {defaultPreset}}`) and it is deliberately the *only* thing those writes
+/// touch. It was drawn as a three-way picker inside the session panel and
+/// reported as a dead control, because an existing session's `permissions`
+/// projection does not move when the default changes — measured by changing the
+/// default and running another turn. The conclusion drawn at the time, that a
+/// session's mode is fixed at creation, was wrong: the mode of a running
+/// conversation is changed by `/permission`, which is a different dsh call and
+/// is covered by `SessionAccessTests` below.
+@MainActor
+final class AccessDefaultTests: XCTestCase {
+    private var suite: UserDefaults!
+    private var suiteName: String!
+    private var stub: StubTransport!
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "rowel.access.tests.\(UUID().uuidString)"
+        suite = UserDefaults(suiteName: suiteName)
+        stub = StubTransport()
+    }
+
+    override func tearDown() {
+        suite.removePersistentDomain(forName: suiteName)
+        super.tearDown()
+    }
+
+    private func settingsAnswer(_ preset: String, revision: Int = 3) -> JSONValue {
+        .object(["namespaces": .array([
+            .object([
+                "ns": .string("permission"),
+                "revision": .number(Double(revision)),
+                "value": .object(["defaultPreset": .string(preset)]),
+            ]),
+        ])])
+    }
+
+    /// `permissionPresets/catalog`, as a real dsh 0.2 answers it.
+    private func catalogAnswer(_ preset: String) -> JSONValue {
+        let options = JSONValue.array(["read-only", "workspace-write", "danger-full-access"].map {
+            .object(["value": .string($0), "name": .string($0)])
+        })
+        return .object(["options": options, "defaultOptions": options, "defaultPreset": .string(preset)])
+    }
+
+    private func session() -> MachineSession {
+        let bundle = PairingBundle(
+            relay: "https://relay.invalid", device: "device-1", key: "", token: "", name: "Test Mac"
+        )
+        return MachineSession(
+            machine: PairedMachine(bundle: bundle),
+            identity: .generate(),
+            deviceName: "Test iPhone",
+            clientVersion: "rowel-tests/1",
+            pairingToken: nil,
+            notifier: Notifier(center: nil),
+            defaults: suite,
+            transport: stub
+        )
+    }
+
+    func testTheDefaultComesFromTheSettingNotASession() async {
+        await stub.answer("permissionPresets/catalog", catalogAnswer("read-only"))
+        let machine = session()
+
+        await machine.refreshAccessDefault()
+
+        XCTAssertEqual(machine.accessDefault?.current, "read-only")
+        XCTAssertEqual(machine.accessDefault?.options.count, 3)
+    }
+
+    func testChangingItSendsTheRevisionItRead() async {
+        await stub.answer("permissionPresets/catalog", catalogAnswer("workspace-write"))
+        await stub.answer("settings/describe", settingsAnswer("workspace-write", revision: 7))
+        let machine = session()
+        await machine.refreshAccessDefault()
+
+        _ = await machine.setPermission("danger-full-access")
+
+        let sent = await stub.payloads("settings/update").last
+        XCTAssertEqual(sent?.path("patch", "defaultPreset")?.stringValue, "danger-full-access")
+        // Optimistic concurrency: a stale revision means somebody at the
+        // keyboard changed it in between, and losing their change silently is
+        // the worse outcome.
+        XCTAssertEqual(sent?["expectedRevision"]?.intValue, 7)
+    }
+
+    func testTheChoiceShowsWithoutWaitingForAProjection() async {
+        // The whole bug in one assertion. Nothing else updates this: the
+        // per-session projection does not move for a settings change, so a UI
+        // that waited for one would sit there looking broken.
+        await stub.answer("permissionPresets/catalog", catalogAnswer("workspace-write"))
+        await stub.answer("settings/describe", settingsAnswer("workspace-write"))
+        let machine = session()
+        await machine.refreshAccessDefault()
+
+        _ = await machine.setPermission("read-only")
+
+        XCTAssertEqual(machine.accessDefault?.current, "read-only")
+    }
+
+    func testARefusalLeavesTheOldValueShowing() async {
+        await stub.answer("permissionPresets/catalog", catalogAnswer("workspace-write"))
+        await stub.answer("settings/describe", settingsAnswer("workspace-write"))
+        let machine = session()
+        await machine.refreshAccessDefault()
+        await stub.fail("settings/update", message: "Someone changed it first.")
+
+        let failure = await machine.setPermission("danger-full-access")
+
+        XCTAssertEqual(failure, "Someone changed it first.")
+        XCTAssertEqual(machine.accessDefault?.current, "workspace-write")
+    }
+}
+
+// MARK: - One conversation's access mode
+
+/// Switching a running conversation, which is a different dsh call from the
+/// machine default above and was believed to be impossible for a while.
+///
+/// The command is `/permission <preset>`, run through `commands/execute` rather
+/// than typed into a prompt: a prompt carrying a `/`-prefixed line is not a
+/// command at all — measured, it lands in the log as an ordinary user message
+/// and starts a turn — so sending the words to the model is the failure this
+/// route avoids. The payload shape asserted here is the one a real dsh accepted.
+@MainActor
+final class SessionAccessTests: XCTestCase {
+    private var suite: UserDefaults!
+    private var suiteName: String!
+    private var stub: StubTransport!
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "rowel.session.access.tests.\(UUID().uuidString)"
+        suite = UserDefaults(suiteName: suiteName)
+        stub = StubTransport()
+    }
+
+    override func tearDown() {
+        suite.removePersistentDomain(forName: suiteName)
+        super.tearDown()
+    }
+
+    /// What the machine answers when it ran the command.
+    private func ran(_ text: String) -> JSONValue {
+        .object([
+            "commandId": .string("cmd-1"),
+            "result": .object(["kind": .string("success"), "text": .string(text)]),
+        ])
+    }
+
+    private func projection(_ current: String) -> JSONValue {
+        .object([
+            "options": .array(["read-only", "workspace-write", "danger-full-access"].map {
+                .object(["value": .string($0), "name": .string($0)])
+            }),
+            "currentValue": .string(current),
+        ])
+    }
+
+    private func session() -> MachineSession {
+        let bundle = PairingBundle(
+            relay: "https://relay.invalid", device: "device-1", key: "", token: "", name: "Test Mac"
+        )
+        return MachineSession(
+            machine: PairedMachine(bundle: bundle),
+            identity: .generate(),
+            deviceName: "Test iPhone",
+            clientVersion: "rowel-tests/1",
+            pairingToken: nil,
+            notifier: Notifier(center: nil),
+            defaults: suite,
+            transport: stub
+        )
+    }
+
+    func testTheSwitchIsThePermissionCommandForThatSession() async {
+        await stub.answer("commands/execute", ran("preset read-only"))
+        let machine = session()
+
+        let failure = await machine.setSessionPermission(sessionId: "s1", preset: "read-only")
+
+        XCTAssertNil(failure)
+        let sent = await stub.payloads("commands/execute").last
+        XCTAssertEqual(sent?["agentId"]?.stringValue, "s1")
+        XCTAssertEqual(sent?["line"]?.stringValue, "/permission read-only")
+        // dsh checks argument names exactly, and wants the attachment list
+        // present even when empty — an absent key is `arguments-invalid`.
+        XCTAssertEqual(sent?["submittedAttachments"]?.arrayValue?.isEmpty, true)
+    }
+
+    func testTheModeComesFromTheProjectionNotFromTheWrite() async {
+        // The design decision worth pinning: this app never places the
+        // checkmark itself. If it did, a session whose switch had not actually
+        // taken effect would still show the new mode — and this particular lie
+        // is about what the agent may do to someone's files.
+        await stub.answer("commands/execute", ran("preset read-only"))
+        let machine = session()
+        let conversation = machine.conversation("s1")
+        conversation.applyProjection(key: "permissions", value: projection("workspace-write"), seq: 4)
+
+        _ = await machine.setSessionPermission(sessionId: "s1", preset: "read-only")
+
+        XCTAssertEqual(conversation.permissions?.current, "workspace-write",
+                       "the screen moved on its own, before the machine said so")
+
+        conversation.applyProjection(key: "permissions", value: projection("read-only"), seq: 6)
+        XCTAssertEqual(conversation.permissions?.current, "read-only")
+    }
+
+    func testAMacWithoutTheCommandSaysSoRatherThanPretending() async {
+        // An older dsh has no `/permission`, and `commands/execute` answers a
+        // bare `undefined` for a name it does not have. Reported as success
+        // that would leave the person believing a mode had changed.
+        let machine = session()
+
+        let failure = await machine.setSessionPermission(sessionId: "s1", preset: "read-only")
+
+        XCTAssertEqual(
+            failure,
+            "This Mac’s dsh has no /permission command, so a running conversation cannot be changed here."
+        )
+    }
+
+    func testTheMachinesOwnWordsComeThroughWhenItRefuses() async {
+        // The command exists and refused. Its message names the presets it does
+        // have, which is more useful than anything this app could invent.
+        let said = "unknown preset \"nonsense\" (available: read-only, workspace-write, danger-full-access)"
+        await stub.answer("commands/execute", .object([
+            "commandId": .string("cmd-2"),
+            "result": .object(["kind": .string("error"), "text": .string(said)]),
+        ]))
+        let machine = session()
+
+        let failure = await machine.setSessionPermission(sessionId: "s1", preset: "nonsense")
+
+        XCTAssertEqual(failure, said)
+    }
+
+    func testATunnelThatCannotCarryItSaysSo() async {
+        await stub.fail("commands/execute", message: "the Mac is unreachable")
+        let machine = session()
+
+        let failure = await machine.setSessionPermission(sessionId: "s1", preset: "read-only")
+
+        XCTAssertEqual(failure, "the Mac is unreachable")
+    }
+}
+
+// MARK: - Slash commands typed into the composer
+
+/// `/permission read-only` typed in the composer has to reach the machine's
+/// command path; everything else beginning with a slash has to keep going to the
+/// model as a message.
+///
+/// Both mistakes are silent. A command sent as a prompt is handed to the model
+/// as words — measured, it lands in the log as an ordinary `user/message` and
+/// starts a turn — and a message mistaken for a command is never delivered to
+/// anyone. So what is asserted here is which call was made, not what it looked
+/// like on screen.
+@MainActor
+final class CommandSendTests: XCTestCase {
+    private var suite: UserDefaults!
+    private var suiteName: String!
+    private var stub: StubTransport!
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "rowel.command.send.tests.\(UUID().uuidString)"
+        suite = UserDefaults(suiteName: suiteName)
+        stub = StubTransport()
+    }
+
+    override func tearDown() {
+        suite.removePersistentDomain(forName: suiteName)
+        super.tearDown()
+    }
+
+    private func session() -> MachineSession {
+        let bundle = PairingBundle(
+            relay: "https://relay.invalid", device: "device-1", key: "", token: "", name: "Test Mac"
+        )
+        return MachineSession(
+            machine: PairedMachine(bundle: bundle),
+            identity: .generate(),
+            deviceName: "Test iPhone",
+            clientVersion: "rowel-tests/1",
+            pairingToken: nil,
+            notifier: Notifier(center: nil),
+            defaults: suite,
+            transport: stub
+        )
+    }
+
+    private var permission: SlashCommand {
+        SlashCommand(command: .object([
+            "name": .string("permission"),
+            "description": .string("Switch the permission preset"),
+            "input": .object(["hint": .string("<preset>")]),
+        ]))!
+    }
+
+    private func notices(_ conversation: Conversation) -> [Notice] {
+        conversation.items.compactMap { if case .notice(let n) = $0 { return n } else { return nil } }
+    }
+
+    func testAListedCommandIsRunRatherThanSentToTheModel() async {
+        await stub.answer("commands/execute", .object([
+            "commandId": .string("cmd-1"),
+            "result": .object(["kind": .string("success"), "text": .string("preset read-only")]),
+        ]))
+        let machine = session()
+        let conversation = machine.conversation("s1")
+        conversation.machineCommands = [permission]
+
+        await machine.send(sessionId: "s1", text: "/permission read-only")
+
+        let ran = await stub.count("commands/execute")
+        let prompted = await stub.count("session/prompt")
+        XCTAssertEqual(ran, 1)
+        XCTAssertEqual(prompted, 0, "a command sent as a prompt is words the model has to guess at")
+        let sent = await stub.payloads("commands/execute").last
+        XCTAssertEqual(sent?["line"]?.stringValue, "/permission read-only")
+        XCTAssertEqual(sent?["agentId"]?.stringValue, "s1")
+        // No bubble goes up: the machine logs the command itself and the
+        // transcript draws the outcome from those events, so an optimistic copy
+        // would be a second and worse account of the same act.
+        XCTAssertTrue(conversation.items.isEmpty)
+    }
+
+    func testAnUnlistedSlashLineStillReachesTheModel() async {
+        let machine = session()
+        let conversation = machine.conversation("s1")
+        conversation.machineCommands = [permission]
+
+        await machine.send(sessionId: "s1", text: "/tmp is full")
+
+        let ran = await stub.count("commands/execute")
+        let prompted = await stub.count("session/prompt")
+        XCTAssertEqual(prompted, 1, "a message that merely starts with a slash is still a message")
+        XCTAssertEqual(ran, 0)
+    }
+
+    func testASkillIsStillAMessage() async {
+        // The two lists share one slash. A skill is text the model reads, so it
+        // must not be routed to the machine even though the composer offers it.
+        let machine = session()
+        let conversation = machine.conversation("s1")
+        conversation.machineCommands = [permission]
+        conversation.skills = [SlashCommand(.object([
+            "name": .string("bro"), "description": .string("Re-explain simply."),
+        ]))!]
+
+        await machine.send(sessionId: "s1", text: "/bro")
+
+        let prompted = await stub.count("session/prompt")
+        let ran = await stub.count("commands/execute")
+        XCTAssertEqual(prompted, 1)
+        XCTAssertEqual(ran, 0)
+    }
+
+    func testARefusalIsLeftWhereTheWordsWereTyped() async {
+        let said = "unknown preset \"nonsense\" (available: read-only, workspace-write, danger-full-access)"
+        await stub.answer("commands/execute", .object([
+            "commandId": .string("cmd-2"),
+            "result": .object(["kind": .string("error"), "text": .string(said)]),
+        ]))
+        let machine = session()
+        let conversation = machine.conversation("s1")
+        conversation.machineCommands = [permission]
+
+        await machine.send(sessionId: "s1", text: "/permission nonsense")
+
+        // The machine's own words, in the transcript, and nothing sent to the
+        // model as a consolation.
+        XCTAssertEqual(notices(conversation).map(\.text), [said])
+        XCTAssertEqual(notices(conversation).first?.kind, .failure)
+        let prompted = await stub.count("session/prompt")
+        XCTAssertEqual(prompted, 0)
+    }
+
+    func testACommandTheMachineNoLongerHasSaysSoRatherThanTryingTheModel() async {
+        // `commands/execute` answers a bare `undefined` for a name it does not
+        // know — a plugin unmounted between the listing and the send. The words
+        // are still a command, so they are not handed to the model.
+        let machine = session()
+        let conversation = machine.conversation("s1")
+        conversation.machineCommands = [permission]
+
+        await machine.send(sessionId: "s1", text: "/permission read-only")
+
+        XCTAssertEqual(notices(conversation).map(\.text), ["This Mac no longer has a /permission command."])
+        let prompted = await stub.count("session/prompt")
+        XCTAssertEqual(prompted, 0)
+    }
+
+    func testACommandStillRunsWhileATurnIsGoing() async {
+        // A command is not part of the turn: dsh runs it directly. It must not be
+        // queued behind the model, which is where a steered prompt would put it.
+        await stub.answer("commands/execute", .object([
+            "commandId": .string("cmd-3"),
+            "result": .object(["kind": .string("success"), "text": .string("preset read-only")]),
+        ]))
+        let machine = session()
+        let conversation = machine.conversation("s1")
+        conversation.machineCommands = [permission]
+
+        await machine.send(sessionId: "s1", text: "/permission read-only", steer: true)
+
+        let prompted = await stub.count("session/prompt")
+        let ran = await stub.count("commands/execute")
+        XCTAssertEqual(ran, 1)
+        XCTAssertEqual(prompted, 0)
+    }
+}
+
+// MARK: - Archiving
+
+/// Archiving is optimistic, which is only safe if the undo is real — and this
+/// undo had never been run. Noted as a gap when the row-level tests were
+/// written and left open until the transport seam existed; the swipe action
+/// that reaches it shipped before the test did.
+final class ArchiveTests: XCTestCase {
+    func testTheRowGoesBeforeTheMachineAnswers() async {
+        let stub = StubTransport()
+        let session = await make(stub)
+        await session.archive(sessionId: "s1")
+
+        let hidden = await MainActor.run { session.archivedSessionIds.contains("s1") }
+        XCTAssertTrue(hidden, "a row that lingers for a round trip reads as a tap that missed")
+        let sent = await stub.payloads("workspace/archiveSession").first
+        XCTAssertEqual(sent?.path("request", "sessionId")?.stringValue, "s1")
+    }
+
+    func testARefusalPutsTheRowBackAndSaysSo() async {
+        let stub = StubTransport()
+        await stub.fail("workspace/archiveSession", message: "the Mac said no")
+        let session = await make(stub)
+        await session.archive(sessionId: "s1")
+
+        let state = await MainActor.run { (session.archivedSessionIds, session.problem) }
+        XCTAssertFalse(state.0.contains("s1"), "the conversation stayed hidden after the machine refused")
+        XCTAssertEqual(state.1, "the Mac said no", "it vanished silently, which reads as success")
+    }
+
+    @MainActor
+    private func make(_ stub: StubTransport) -> MachineSession {
+        let bundle = PairingBundle(
+            relay: "https://relay.invalid", direct: nil, device: "device-1",
+            key: "", token: "", name: "Test Mac"
+        )
+        return MachineSession(
+            machine: PairedMachine(bundle: bundle),
+            identity: .generate(),
+            deviceName: "Test iPhone",
+            clientVersion: "rowel-tests/1",
+            pairingToken: nil,
+            notifier: Notifier(center: nil),
+            defaults: UserDefaults(suiteName: "archive-tests-\(UUID().uuidString)")!,
+            transport: stub
+        )
+    }
+}

@@ -1,0 +1,217 @@
+/// Switching a conversation's model.
+///
+/// Grouped by provider, because that is how the harness reports them and how
+/// people think about them. Providers that failed to load are listed rather than
+/// dropped: a missing model is otherwise indistinguishable from a model that was
+/// never installed, and the fix is different.
+///
+/// Nothing is sent until Done. Tapping a model selects it and opens its thinking
+/// levels right under the row, where the tap was; a one-line summary at the top
+/// keeps what Done will apply in view however far the list is scrolled. Done
+/// applies the model and level together, Cancel (or swiping the sheet away)
+/// applies neither.
+
+import SwiftUI
+
+struct ModelPicker: View {
+    let session: MachineSession
+    let sessionId: String
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: ModelDraft?
+    @State private var problem: String?
+    /// Why Done did not go through; the sheet stays open so it can be retried.
+    @State private var failure: String?
+    @State private var applying = false
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let draft {
+                    list(draft)
+                } else if let problem {
+                    Placeholder(icon: "exclamationmark.triangle", title: "Couldn’t list models", detail: problem)
+                } else {
+                    Placeholder(icon: "cpu", title: "Loading models…")
+                }
+            }
+            .navigationTitle("Model")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(applying)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if applying {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("Done") { Task { await apply() } }
+                            .fontWeight(.semibold)
+                    }
+                }
+            }
+            .interactiveDismissDisabled(applying)
+        }
+        .task { await load() }
+    }
+
+    private func list(_ draft: ModelDraft) -> some View {
+        let catalog = draft.base
+        return List {
+            if let failure {
+                Section {
+                    Label(failure, systemImage: "exclamationmark.triangle")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let selected = draft.option {
+                selectedSection(selected, draft)
+            }
+            ForEach(groups(catalog), id: \.provider) { group in
+                Section(group.name) {
+                    ForEach(group.options) { option in
+                        Button {
+                            self.draft?.choose(option)
+                        } label: {
+                            HStack(alignment: .top, spacing: Metrics.gap) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(option.name)
+                                        .font(.system(size: 15, weight: .medium))
+                                    if let description = option.description, !description.isEmpty {
+                                        Text(description)
+                                            .font(.system(size: 12.5))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                if draft.option?.id == option.id {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundStyle(Palette.accent)
+                                }
+                            }
+                        }
+                        .foregroundStyle(.primary)
+
+                        // Under the row that was tapped, so choosing a model and
+                        // its level happen in one place. Only for the selected
+                        // model: every model's levels would triple the list.
+                        if draft.option?.id == option.id {
+                            levelPicker(option, draft)
+                        }
+                    }
+                }
+            }
+            if !catalog.failures.isEmpty {
+                Section("Unavailable") {
+                    ForEach(catalog.failures, id: \.self) { failure in
+                        Text(failure)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    /// What Done will apply, in one line at the top. A summary rather than the
+    /// controls themselves: the levels open where the model was tapped, and a
+    /// second copy up here would be off screen exactly when it was needed.
+    private func selectedSection(_ option: ModelOption, _ draft: ModelDraft) -> some View {
+        Section {
+            Text(summary(option, effort: draft.effort, in: draft.base))
+                .font(.system(size: 15, weight: .semibold))
+        } header: {
+            Text("Selected")
+        } footer: {
+            if draft.changed, let live = draft.base.current {
+                Text("In use: \(summary(live, effort: draft.liveEffort, in: draft.base)). Done switches.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func levelPicker(_ option: ModelOption, _ draft: ModelDraft) -> some View {
+        let levels = draft.base.efforts(for: option)
+        if !levels.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                // "" matches no segment: a level nobody named is shown as
+                // unnamed, not as the first one.
+                Picker("Thinking", selection: Binding(
+                    get: { draft.effort ?? "" },
+                    set: { self.draft?.choose(effort: $0) }
+                )) {
+                    ForEach(levels) { level in
+                        Text(level.name).tag(level.id)
+                    }
+                }
+                .pickerStyle(.segmented)
+                if draft.effort == nil {
+                    Text("Model default. Pick a level to set one.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .listRowInsets(EdgeInsets(top: 4, leading: Metrics.gutter, bottom: 10, trailing: Metrics.gutter))
+        }
+    }
+
+    private func summary(_ option: ModelOption, effort: String?, in catalog: ModelCatalog) -> String {
+        let levels = catalog.efforts(for: option)
+        if levels.isEmpty { return option.name }
+        guard let effort else { return "\(option.name) · Model default" }
+        let name = levels.first { $0.id == effort }?.name ?? effort
+        return "\(option.name) · \(name)"
+    }
+
+    private struct ProviderGroup {
+        var provider: String
+        var name: String
+        var options: [ModelOption]
+    }
+
+    private func groups(_ catalog: ModelCatalog) -> [ProviderGroup] {
+        var order: [String] = []
+        var byProvider: [String: ProviderGroup] = [:]
+        for option in catalog.options {
+            if byProvider[option.provider] == nil {
+                order.append(option.provider)
+                byProvider[option.provider] = ProviderGroup(provider: option.provider, name: option.providerName, options: [])
+            }
+            byProvider[option.provider]?.options.append(option)
+        }
+        return order.compactMap { byProvider[$0] }
+    }
+
+    private func load() async {
+        do {
+            draft = ModelDraft(try await session.harness.models(sessionId: sessionId))
+        } catch {
+            problem = (error as? LocalizedError)?.errorDescription ?? "The Mac didn’t answer."
+        }
+    }
+
+    /// Send the model and level chosen in the sheet, then close it.
+    ///
+    /// The draft already carries the new model's own default when no level was
+    /// picked, so nil here really means "name none" and the machine keeps
+    /// whatever the model defaults to.
+    private func apply() async {
+        guard let draft, draft.changed, let option = draft.option else {
+            dismiss()
+            return
+        }
+        applying = true
+        defer { applying = false }
+        // Through the session, not the harness. The header reads the
+        // conversation, so a write that only touched this sheet's copy left the
+        // two disagreeing until the next turn.
+        if let refused = await session.selectModel(sessionId: sessionId, option: option, effort: draft.effort) {
+            failure = refused
+            return
+        }
+        dismiss()
+    }
+}

@@ -1,0 +1,16 @@
+{
+  "endpoint": "session/rename",
+  "args": {
+    "request": {
+      "sessionId": "session-8dce473f-5132-4d16-8230-0f128f60a0bf",
+      "title": "Fixture conversation"
+    }
+  },
+  "result": {
+    "ok": true,
+    "value": {
+      "title": "Fixture conversation",
+      "seq": 20
+    }
+  }
+}
