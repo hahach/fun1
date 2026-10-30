@@ -1,0 +1,157 @@
+name: ios-core
+
+# 平台中立的传输/协议层单测。ubuntu 分钟按 1× 计费，可以随 push 跑。
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Core/**'
+      - 'ios/**'
+      - '.github/workflows/core.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-core-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: core tests (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: Core
+    steps:
+      - uses: actions/checkout@v4
+      - name: cache swiftpm
+        uses: actions/cache@v4
+        with:
+          path: Core/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('Core/Package.swift', 'Core/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+      - name: toolchain
+        run: swift --version
+      - name: test
+        run: swift test
+
+  probe:
+    name: probe (linux, real sshd)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cache swiftpm
+        uses: actions/cache@v4
+        with:
+          path: Core/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('Core/Package.swift', 'Core/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: toolchain
+        run: swift --version
+
+      - name: start sshd
+        run: |
+          sudo mkdir -p /run/sshd
+          sudo ssh-keygen -A
+          ssh-keygen -t ed25519 -f "$HOME/.ssh/probe_key" -N '' -q
+          sudo mkdir -p /root/.ssh
+          sudo tee -a /root/.ssh/authorized_keys < "$HOME/.ssh/probe_key.pub" > /dev/null
+          sudo chmod 700 /root/.ssh
+          sudo chmod 600 /root/.ssh/authorized_keys
+          sudo /usr/sbin/sshd -p 22
+          sleep 1
+
+      - name: fake dsh
+        run: |
+          sudo mkdir -p /root/.dsh
+          sudo "$(command -v node)" ./tools/fake-dsh.mjs &
+          sleep 1
+
+      - name: "probe unary"
+        timeout-minutes: 3
+        working-directory: Core
+        env:
+          DSH_DEBUG: '1'
+        run: swift run dsh-probe --user root --host 127.0.0.1 --port 22 --key "$HOME/.ssh/probe_key" --call session/list
+
+      # 转发器形状覆盖：一条连接保持打开、同会话再开第二条 direct-tcpip 通道，
+      # 每轮都必须拿到 HTTP 响应（覆盖「两通道并存」，此前无覆盖）。
+      - name: "probe forward stress"
+        timeout-minutes: 5
+        working-directory: Core
+        env:
+          DSH_DEBUG: '1'
+        run: swift run dsh-probe --user root --host 127.0.0.1 --port 22 --key "$HOME/.ssh/probe_key" --forward-stress 20
+      - name: "probe stream"
+        timeout-minutes: 3
+        working-directory: Core
+        env:
+          DSH_DEBUG: '1'
+        run: swift run dsh-probe --user root --host 127.0.0.1 --port 22 --key "$HOME/.ssh/probe_key" --stream session/follow
+
+      - name: "probe tty"
+        timeout-minutes: 3
+        working-directory: Core
+        env:
+          DSH_DEBUG: '1'
+        run: swift run dsh-probe --user root --host 127.0.0.1 --port 22 --key "$HOME/.ssh/probe_key" --tty
+
+      - name: "probe reconnect"
+        timeout-minutes: 3
+        working-directory: Core
+        env:
+          DSH_DEBUG: '1'
+        run: swift run dsh-probe --user root --host 127.0.0.1 --port 22 --key "$HOME/.ssh/probe_key" --reconnect
+
+      - name: "probe restart"
+        timeout-minutes: 3
+        working-directory: Core
+        env:
+          DSH_DEBUG: '1'
+        run: swift run dsh-probe --user root --host 127.0.0.1 --port 22 --key "$HOME/.ssh/probe_key" --restart
+      # 大响应回归：1 MB 级响应经本地转发是否完整（真实 session/list 约 1 MB）。
+      - name: "probe big response"
+        timeout-minutes: 3
+        working-directory: Core
+        env:
+          DSH_DEBUG: '1'
+        run: swift run dsh-probe --user root --host 127.0.0.1 --port 22 --key "$HOME/.ssh/probe_key" --call session/big
+      # exec 与数据通道并发回归：RemoteLog 的 runRemote 与大响应共用一条 SSH 连接。
+      - name: "probe exec race"
+        timeout-minutes: 5
+        working-directory: Core
+        env:
+          DSH_DEBUG: '1'
+        run: swift run dsh-probe --user root --host 127.0.0.1 --port 22 --key "$HOME/.ssh/probe_key" --exec-race
+      # 真机链路有 RTT，loopback 零延迟可能掩盖 SSH 窗口/流控时序问题：给 lo 加延迟再跑大响应。
+      - name: "probe big response (with latency)"
+        timeout-minutes: 6
+        working-directory: Core
+        env:
+          DSH_DEBUG: '1'
+        run: |
+          sudo tc qdisc add dev lo root netem delay 30ms 5ms
+          tc qdisc show dev lo | grep -q netem || { echo "netem 未生效"; exit 8; }
+          swift run dsh-probe --user root --host 127.0.0.1 --port 22 --key "$HOME/.ssh/probe_key" --call session/big
+          swift run dsh-probe --user root --host 127.0.0.1 --port 22 --key "$HOME/.ssh/probe_key" --exec-race
+          sudo tc qdisc del dev lo root
+
+  ios-syntax:
+    name: ios syntax (linux, parse only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: swift --version
+      # 只做语法解析：真正的类型检查需要 iOS SDK，只能在 macOS 上做（10× 计费）。
+      # 这一步在 1× 的 runner 上挡住括号、字符串转义一类的低级错误。
+      - name: parse
+        run: |
+          find ios/Rowel -name "*.swift" -print0 | xargs -0 -n1 swiftc -parse

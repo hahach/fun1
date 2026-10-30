@@ -1,0 +1,110 @@
+name: ios-ipa
+
+# macOS 分钟按 10× 计费：只跟 UI/装配层改动和手动触发。
+# Core/ 的纯逻辑改动由 core.yml 在 ubuntu 上跑（1× 分钟）。
+on:
+  # 只手动触发：iOS 构建按 10× 计费，攒批后才出包。
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    name: unsigned ipa (macos)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: mark start
+        run: echo "started $(date -u +%FT%TZ)"
+
+      # Citadel 带 BoringSSL，冷编译约 5 分钟；缓存 SwiftPM 与 DerivedData 降到 2 分钟内。
+      - name: cache spm
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ios/build/spm
+          key: spm-ios-${{ hashFiles('Core/Package.swift', 'Core/Package.resolved') }}
+          restore-keys: spm-ios-
+
+      - name: cache derived data
+        uses: actions/cache@v4
+        with:
+          path: ios/build/dd
+          key: dd-${{ hashFiles('Core/Package.resolved') }}
+          restore-keys: dd-
+
+      - name: xcodegen
+        run: |
+          xcodebuild -version
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            curl -fsSL -o xcodegen.zip https://github.com/yonaskolb/XcodeGen/releases/latest/download/xcodegen.zip
+            unzip -q xcodegen.zip
+            echo "$PWD/xcodegen/bin" >> "$GITHUB_PATH"
+          fi
+          # GITHUB_PATH 只对后续 step 生效，本 step 用绝对路径自检
+          "$PWD/xcodegen/bin/xcodegen" --version 2>/dev/null || xcodegen --version
+
+      - name: generate project
+        run: xcodegen generate
+
+      - name: archive (unsigned)
+        run: |
+          xcodebuild archive \
+            -project Rowel.xcodeproj \
+            -scheme Rowel \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Rowel.xcarchive \
+            -derivedDataPath build/dd \
+            -clonedSourcePackagesDirPath build/spm \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ONLY_ACTIVE_ARCH=YES \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }}
+
+      - name: package ipa
+        run: |
+          APP=$(find build/Rowel.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -1)
+          test -n "$APP"
+          rm -rf Payload dafeiyu-dsh-client-unsigned.ipa
+          mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry dafeiyu-dsh-client-unsigned.ipa Payload
+          ls -lh dafeiyu-dsh-client-unsigned.ipa
+
+      # 发布到 gist 的源要用它拼版本号；与 IPA 一起传，发布脚本只认这一对产物。
+      - name: build info
+        run: |
+          APP=$(find build/Rowel.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -1)
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
+          printf '{"version":"%s","build":%s,"sha":"%s","minOSVersion":"17.0"}' "$VERSION" "${{ github.run_number }}" "${{ github.sha }}" > build-info.json
+          cat build-info.json
+      - name: publish to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=ios-latest
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "iOS unsigned IPA (latest)" \
+              --notes "Unsigned IPA for LiveContainer. Latest build: #${{ github.run_number }} from ${{ github.sha }}."
+          fi
+          gh release upload "$TAG" dafeiyu-dsh-client-unsigned.ipa build-info.json --clobber
+          gh release edit "$TAG" --notes "Unsigned IPA for LiveContainer. Latest build: #${{ github.run_number }} from ${{ github.sha }}."
+
+      - name: mark end
+        run: echo "finished $(date -u +%FT%TZ)"

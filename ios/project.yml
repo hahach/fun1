@@ -1,0 +1,200 @@
+name: Rowel
+options:
+  bundleIdPrefix: ai.novabox
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.2"
+    CURRENT_PROJECT_VERSION: "1"
+    # Overridable from the environment so a different machine, or CI, does not
+    # have to edit a tracked file to build. Empty means simulator only.
+    DEVELOPMENT_TEAM: ${ROWEL_TEAM_ID}
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_STRICT_CONCURRENCY: minimal
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+
+packages:
+  DshClientCore:
+    path: ../Core
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm.git
+    from: 1.99.1
+
+targets:
+  Rowel:
+    type: application
+    platform: iOS
+    sources:
+      - path: Rowel
+    dependencies:
+      - package: DshClientCore
+      - package: SwiftTerm
+    settings:
+      base:
+        # Reverse of a domain that is actually owned, so it cannot collide with
+        # someone else's App Store record.
+        PRODUCT_BUNDLE_IDENTIFIER: dev.hahach.dafeiyu-dsh-client
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_ENTITLEMENTS: Rowel/Rowel.entitlements
+        # iPhone only. The layout is one portrait column and has never been
+        # anything else, and claiming the iPad idiom costs three things for no
+        # gain: App Store Connect starts demanding a set of 13" iPad
+        # screenshots, App Review runs the app on hardware it was not drawn
+        # for, and the iPad multitasking rule requires all four orientations —
+        # the escape hatch for which, UIRequiresFullScreen, Apple has
+        # deprecated (TN3192). Dropping to family 1 settles all three, and an
+        # iPhone-only app still installs on iPad in compatibility mode.
+        TARGETED_DEVICE_FAMILY: "1"
+    # Every key below lives here rather than in `settings.base` as an
+    # INFOPLIST_KEY_* entry. Those settings are only consulted when Xcode
+    # *generates* the Info.plist; this target ships an explicit one
+    # (GENERATE_INFOPLIST_FILE = NO), so an INFOPLIST_KEY_* is evaluated,
+    # printed by -showBuildSettings, and then silently dropped on the floor.
+    # Six of them were, including three purpose strings the app cannot run
+    # without.
+    info:
+      path: Rowel/Info.plist
+      properties:
+        CFBundleDisplayName: dafeiyu-dsh-client
+        # Both of these defer to the build settings rather than restating the
+        # numbers. A literal here wins over anything `xcodebuild` is passed on
+        # the command line, which is how every build came out stamped `1` no
+        # matter what `release.sh` computed — App Store Connect then refuses
+        # the second upload, and the message is about a duplicate version
+        # rather than about the plist that produced it.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        # One column, one orientation. Stated rather than left to the default,
+        # which is portrait *plus* both landscapes on iPhone.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # Purpose strings. Each of these is load-bearing: iOS does not fail a
+        # missing one politely, it terminates the process (Termination Reason:
+        # Namespace TCC) the first time the matching API is touched.
+        #
+        # Camera — scanning the Mac's pairing QR is the fast path onto a
+        # machine, and ScannerView calls AVCaptureDevice.requestAccess.
+        NSCameraUsageDescription: dafeiyu-dsh-client uses the camera to scan the pairing code your host shows.
+        # Face ID — AppLock calls LAContext.canEvaluatePolicy, which since
+        # iOS 17 is itself enough to trip the check, before any prompt appears.
+        NSFaceIDUsageDescription: dafeiyu-dsh-client can ask for Face ID before showing your conversations, so a found phone does not open them.
+        # Photos — the composer's PhotosPicker runs out of process and would
+        # work without this, but the app does put library images into a
+        # message, and the honest declaration costs nothing.
+        NSPhotoLibraryUsageDescription: dafeiyu-dsh-client attaches photos you pick to a message.
+        # Local network — direct LAN connections skip the relay entirely.
+        # Apple's TN3179 lists "making an outgoing TCP connection" as
+        # requiring this, Bonjour or not, and since iOS 18 the consent prompt
+        # does not even appear without the string: the connection just fails
+        # as NSURLErrorNotConnectedToInternet (-1009) with an underlying
+        # "Local network prohibited". That is the whole fast path, silently.
+        NSLocalNetworkUsageDescription: dafeiyu-dsh-client connects straight to your host when both are on the same Wi-Fi, which is faster and never leaves your network.
+        # False, and the reason is a property of the binary rather than a
+        # reading of intent: this app contains no encryption algorithm.
+        #
+        # Apple states the test twice on the App Encryption Documentation page,
+        # and both halves turn on the word *algorithms*. Documentation is
+        # required for "encryption algorithms that are proprietary or not
+        # accepted as standard by international standard bodies", and for
+        # "standard encryption algorithms instead of, or in addition to, using
+        # or accessing the encryption within Apple's operating system".
+        #
+        # Every algorithm the app touches is inside iOS. X25519,
+        # ChaCha20-Poly1305, SHA-256 and HKDF are all reached through CryptoKit;
+        # `Noise.swift` implements none of them — even `hkdf2`, which looks like
+        # a key-derivation function, is a call to `HKDF<SHA256>.deriveKey` whose
+        # 64-byte output it splits in two, because that is what the Noise spec
+        # calls HKDF2. There is no third-party dependency of any kind: no SPM
+        # package, no CocoaPods, no vendored C. That is checkable in one grep
+        # and is the whole of the argument.
+        #
+        # An earlier version of this comment declared true, reasoning that the
+        # primitives are Apple's "but the Noise state machine on top is ours".
+        # A protocol is not an algorithm. The state machine decides which
+        # Diffie-Hellman happens next and what goes into the chaining key; it
+        # performs no cryptography. By that earlier logic an app that arranges
+        # its own sequence of URLSession calls would be implementing TLS.
+        #
+        # Cost of getting this wrong in the conservative direction, which is
+        # what happened: declaring true obliges the export documentation to be
+        # filed before any build will even upload — altool refuses with
+        # "Invalid Export Compliance Code ... [] ... doesn't match" — and the
+        # document Apple wants is the French encryption declaration. That is a
+        # real form, filed for cryptography this app does not contain.
+        #
+        # Keeping every primitive on CryptoKit is therefore worth defending for
+        # a second reason: bundling libsodium or a Rust Noise implementation
+        # would change none of the cryptography and would put an algorithm in
+        # the binary, which is exactly what this answer turns on.
+        ITSAppUsesNonExemptEncryption: false
+        CFBundleURLTypes:
+          - CFBundleURLName: ai.novabox.rowel.pair
+            CFBundleURLSchemes:
+              - rowel
+        NSAppTransportSecurity:
+          # Direct connections are plain WebSocket over the local network,
+          # carrying nothing but Noise ciphertext — TLS underneath would
+          # authenticate a name no one can issue a certificate for. The
+          # exception is scoped to local addresses; the relay stays wss.
+          NSAllowsLocalNetworking: true
+
+  RowelTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: RowelTests
+    dependencies:
+      - target: Rowel
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.hahach.dafeiyu-dsh-client.tests
+        GENERATE_INFOPLIST_FILE: YES
+        # Tests run on the simulator, which needs no team and no profile.
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO
+
+  RowelUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: RowelUITests
+    dependencies:
+      - target: Rowel
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.hahach.dafeiyu-dsh-client.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Rowel
+
+schemes:
+  Rowel:
+    build:
+      targets:
+        Rowel: all
+        RowelTests: [test]
+        RowelUITests: [test]
+    test:
+      targets:
+        - RowelTests
+      gatherCoverageData: false
+
+  # Separate scheme: the unit tests run anywhere in seconds, the UI tests need a
+  # paired Bridle and take minutes. Keeping them in one scheme would mean every
+  # `npm run test:ios` waits on a machine that may not be running.
+  RowelUI:
+    build:
+      targets:
+        Rowel: all
+        RowelUITests: [test]
+    test:
+      targets:
+        - RowelUITests
+      gatherCoverageData: false
+    run:
+      config: Debug

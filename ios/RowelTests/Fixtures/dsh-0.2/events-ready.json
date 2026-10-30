@@ -1,0 +1,13 @@
+{
+  "endpoint": "$events",
+  "args": {},
+  "items": [
+    {
+      "type": "ready",
+      "clientId": "3f3c782a-e550-474a-a784-00248572b8a7",
+      "host": {
+        "home": "/tmp/dsh-home/user"
+      }
+    }
+  ]
+}

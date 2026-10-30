@@ -1,0 +1,481 @@
+#!/usr/bin/env bash
+#
+# Take the store screenshots, from the running app.
+#
+# The shots have to show real work — a mocked conversation looks like one, and
+# the one thing a store listing has to establish is that the thing is real. So
+# this drives the actual app against an actual harness.
+#
+# It will not use yours. A screenshot of a real machine is a screenshot of
+# somebody's project paths, somebody's conversations, and somebody's hostname,
+# and all three end up on a public page. Instead it starts a throwaway harness
+# with its own DSH_HOME, its own port, and its own pairing identity, seeded with
+# a sample repository, and pairs a simulator to that.
+#
+# Usage:
+#   ios/screenshots.sh            set up if needed, then take them
+#   ios/screenshots.sh --seed     set up and seed conversations, then stop
+#   ios/screenshots.sh --shots    take them against an environment already up
+#   ios/screenshots.sh --up       start the harness and the Bridle, nothing else
+#                                 (ios/demo.sh borrows them)
+#
+# Requirements: xcodegen, a booted-able iPhone simulator, and dsh 0.2 — on the
+# PATH, or named by ROWEL_SHOTS_DSH. The harness needs a model to answer, and
+# takes the model routes (not the keys: those are named by environment
+# variable) from ~/.dsh/settings.yaml, or from ROWEL_SHOTS_SETTINGS.
+#
+# Its home is ~/rowel-shots-0.2, not the ~/rowel-shots dsh 0.1 used: dsh 0.2
+# rewrites a home it starts in, and that one stays as it was.
+
+set -euo pipefail
+
+cd "$(dirname "$0")"
+root="$(cd .. && pwd)"
+# This fork: scratch lives under the repo's .tmp, not the system /tmp.
+scratch="$(cd "$root/../.." && pwd)/.tmp/tests/dafeiyu-dsh-client/ios"
+mkdir -p "$scratch"
+home="${ROWEL_SHOTS_HOME:-$HOME/rowel-shots-0.2}"
+port="${ROWEL_SHOTS_PORT:-3086}"
+dsh="${ROWEL_SHOTS_DSH:-dsh}"
+settings="${ROWEL_SHOTS_SETTINGS:-$HOME/.dsh/settings.yaml}"
+device="${ROWEL_SHOTS_DEVICE:-iPhone 17 Pro Max}"
+# Under /Users/Shared, not under anybody's home. The path is *visible in the
+# product*: the session list, the conversation header and the transcript all
+# print the working directory, so a fixture under $HOME publishes the
+# operator's username in every screenshot and every frame of the demo video —
+# which it did, six times over, on the store listing.
+sample="/Users/Shared/code/checkout-api"
+
+# Owner-only, all of it: the log carries dsh's launch token, which signs in to
+# the harness for as long as it runs, and $home may be anywhere.
+umask 077
+mkdir -p "$home"
+chmod 700 "$home"
+# A home from before this rule may hold a log anyone could read.
+[ -f "$home/dsh.log" ] && chmod 600 "$home/dsh.log"
+
+if [ -t 1 ]; then bold=$(printf '\033[1m'); off=$(printf '\033[0m'); else bold=''; off=''; fi
+say() { printf '%s==>%s %s\n' "$bold" "$off" "$*"; }
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+
+command -v "$dsh" >/dev/null 2>&1 || fail "no dsh at '$dsh' — put dsh 0.2 on the PATH or name it with ROWEL_SHOTS_DSH."
+case "$("$dsh" --version 2>/dev/null)" in
+  0.0.*|0.1.*|"") fail "$dsh is not dsh 0.2 ($("$dsh" --version 2>/dev/null || echo unknown))." ;;
+esac
+command -v xcodegen >/dev/null 2>&1 || fail "xcodegen is not installed. brew install xcodegen"
+[ -f "$root/bridle/lib/cli.js" ] || fail "The Bridle is not built. Run: npm run build"
+
+# One dsh call: an endpoint and its arguments, signed in (Tools/dsh.mjs). The
+# arguments go in on stdin, not as an argument: one of them carries a base64
+# PNG, and an image is comfortably larger than the command line will hold.
+rpc() {
+  printf '%s' "$2" | node Tools/dsh.mjs "$port" "$home/dsh.log" "$1"
+}
+
+# The zone name dsh will accept.
+#
+# `date +%Z` gives the abbreviation, and on this machine that is `+08` — which
+# dsh rejects, because it wants UTC or an IANA Area/Location. The refusal is
+# per prompt, so the cost of getting it wrong was four conversations that
+# existed, had titles, and contained nothing.
+zone() {
+  local link
+  link=$(readlink /etc/localtime 2>/dev/null)
+  case "$link" in
+    */zoneinfo/*) printf '%s' "${link#*/zoneinfo/}" ;;
+    *) printf 'UTC' ;;
+  esac
+}
+value() { python3 -c 'import json,sys;print(json.load(sys.stdin)["result"]["value"]'"$1"')'; }
+
+# --- A harness of its own ---------------------------------------------------
+
+start_harness() {
+  if curl -s -o /dev/null -m 2 "http://127.0.0.1:$port/"; then
+    say "harness already up on :$port"
+    return
+  fi
+  mkdir -p "$home/dsh-home/profiles/web"
+  [ -f "$settings" ] || fail "no $settings to take model routes from."
+  local routes
+  routes=$(node -e 'import(process.argv[1]).then(m => process.stdout.write(m.modelRows(require("node:fs").readFileSync(process.argv[2], "utf8"))))' \
+    "$root/e2e/lib/index.js" "$settings")
+  [ -n "$routes" ] || fail "$settings names no llm-pi-ai routes for the harness to use."
+  # The port lives in the home's own config, which is what makes the home the
+  # instance: a second dsh started here loses the port and stops, rather than
+  # quietly becoming a second answer to the same question.
+  cat > "$home/dsh-home/profiles/web/cordis.patch.yml" <<YAML
+# Screenshot profile — regenerated by ios/screenshots.sh when missing.
+
+- id: directory-picker
+  disabled: true
+
+- insert:
+    - id: directory-picker-browse
+      name: '@deepseek-ai/dsh-host-directory-picker-browse'
+    - id: ui-directory-picker-browse
+      name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
+
+- id: llm-deepseek
+  disabled: true
+
+- id: webserver
+  config:
+    host: 127.0.0.1
+    port: $port
+
+$routes
+YAML
+  # The Bridle runs inside this dsh, as a plugin: dsh 0.2 hands its port and
+  # sign-in token to plugins and to nothing else. ROWEL_HOME on the dsh below
+  # is the identity the simulator pairs with.
+  node "$root/bridle/lib/cli.js" plugin install --dsh-home "$home/dsh-home" >/dev/null
+  # An empty agents home, because `DSH_HOME` does not isolate skills: they are
+  # read from a shared `~/.agents`, so this harness inherited every skill on
+  # the machine and dsh injected the whole catalogue — names and descriptions —
+  # into each session as context. That catalogue is rendered, and it described
+  # the operator's employer, their internal tools and what they work on. It
+  # reached the fixtures behind the store screenshots, one tap from being
+  # legible. A throwaway harness gets a throwaway agents home.
+  mkdir -p "$home/agents-home/skills"
+  # A PATH with no user directories on it. The agent probes its environment —
+  # `which python3`, pip, a cache dir — and every one of those answers is a
+  # path, printed into a tool card that renders on screen. With ~/.local/bin
+  # on the PATH the answers all begin /Users/<operator>, which is the same
+  # leak the fixture move fixed, arriving through the toolchain instead. With
+  # only system directories there is nothing user-specific for a probe to find.
+  #
+  # dsh is a Node script, so Node is named here rather than found on that
+  # PATH: wherever it is installed — a version manager under the operator's
+  # home, say — its directory stays out of what the agent can see.
+  local bin node
+  bin=$(command -v "$dsh")
+  node=$(command -v node)
+  DSH_TELEMETRY_DISABLED=1 DSH_HOME="$home/dsh-home" DSH_AGENTS_HOME="$home/agents-home" \
+    ROWEL_HOME="$home/rowel-home" PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    nohup "$node" "$bin" web --no-open >> "$home/dsh.log" 2>&1 &
+  printf 'harness starting on :%s ' "$port"
+  until curl -s -o /dev/null -m 2 "http://127.0.0.1:$port/"; do printf '.'; sleep 1; done
+  echo ' up'
+}
+
+start_bridle() {
+  # Started by dsh, as its plugin (see start_harness); wait until it is up.
+  local waited=0
+  until [ -f "$home/rowel-home/runtime.json" ] || [ "$waited" -ge 30 ]; do sleep 1; waited=$((waited + 1)); done
+  [ -f "$home/rowel-home/runtime.json" ] || fail "the Bridle plugin did not start; see $home/dsh.log"
+  say "bridle up (inside dsh)"
+}
+
+# --- A repository worth photographing ---------------------------------------
+
+seed_repo() {
+  mkdir -p "$sample"
+  # An identity for the fixture, before anything can run `git` in here.
+  #
+  # One of these conversations is asked to commit and push, and the agent
+  # reports what it found — so whatever identity this directory resolves to is
+  # read out in a transcript and photographed for the store. Left to inherit,
+  # that is whoever owns the Mac, and it was: an earlier set of shots carried a
+  # real name and a work email in a terminal card. `example.com` matches the
+  # remote the push is aimed at and reads as what it is.
+  git -C "$sample" init --quiet 2>/dev/null || true
+  git -C "$sample" config user.name "dev"
+  git -C "$sample" config user.email "dev@example.com"
+  cat > "$sample/README.md" <<'EOF'
+# checkout-api
+
+Payment intents, refunds, and webhook delivery for the storefront.
+EOF
+  cat > "$sample/rates.py" <<'EOF'
+"""Currency conversion for checkout totals."""
+
+RATES = {"USD": 1.0, "EUR": 0.92, "GBP": 0.79, "JPY": 157.0}
+
+
+def convert(amount, source, target):
+    """Convert an amount between two supported currencies."""
+    return amount / RATES[source] * RATES[target]
+
+
+def total_with_shipping(items, currency, shipping=0):
+    subtotal = sum(item["price"] for item in items)
+    return convert(subtotal + shipping, "USD", currency)
+EOF
+  # Self-running, no pytest. Asking the agent to "run the tests" on a machine
+  # without pytest sent it hunting — which python, which pip, a uv cache — and
+  # every answer was a path under the operator's home, printed into cards the
+  # screenshots then show. A plain script needs nothing but python3.
+  cat > "$sample/test_rates.py" <<'EOF'
+"""Checks for rates.py. Run directly: python3 test_rates.py"""
+from rates import convert, total_with_shipping
+
+CHECKS = []
+
+
+def check(name):
+    def keep(fn):
+        CHECKS.append((name, fn))
+        return fn
+    return keep
+
+
+@check("same currency is identity")
+def test_identity():
+    assert convert(10, "USD", "USD") == 10
+
+
+@check("round trip returns the amount")
+def test_round_trip():
+    assert round(convert(convert(10, "USD", "EUR"), "EUR", "USD"), 6) == 10
+
+
+if __name__ == "__main__":
+    for name, fn in CHECKS:
+        fn()
+        print(f"PASS {name}")
+    print(f"{len(CHECKS)} passed")
+EOF
+  python3 - "$sample" <<'EOF'
+import json, random, sys
+random.seed(7)
+days = [{"date": f"2026-08-{i + 1:02d}",
+         "orders": random.randint(80, 260),
+         "refunds": random.randint(0, 14),
+         "revenue": round(random.uniform(4200, 15800), 2),
+         "p95_checkout_ms": random.randint(180, 900)} for i in range(30)]
+json.dump({"currency": "USD", "days": days},
+          open(f"{sys.argv[1]}/metrics.json", "w"), indent=2)
+EOF
+  say "sample repository seeded at $sample"
+}
+
+# --- Conversations the shots are of -----------------------------------------
+
+# Send one prompt and make sure it was taken.
+#
+# The refusal used to go to /dev/null. Seeding therefore "succeeded" while
+# every prompt was rejected, leaving four conversations that had titles and
+# nothing else — and those are what the store screenshots were taken of. The
+# rejection was a bad `clientTimeZone`, which the message said plainly and
+# which nobody could read, because nobody was reading.
+#
+# Retried as well as reported: the answer is not always instant, and a prompt
+# is cheap to send twice.
+# $1 session id, $2 content array as JSON
+prompt_now() {
+  local attempt reply
+  for attempt in 1 2 3 4 5 6 7 8; do
+    # Retried, so a refusal is read rather than allowed to end the script.
+    reply=$(rpc session/prompt \
+      "{\"request\":{\"requestId\":\"$(uuidgen)\",\"sessionId\":\"$1\",\"mode\":\"queue\",\"content\":$2,\"clientTimeZone\":\"$(zone)\"}}" || true)
+    case "$reply" in *'"accepted":true'*) return 0 ;; esac
+    sleep 5
+  done
+  fail "the harness would not accept a prompt: $reply"
+}
+
+# $1 title, $2 prompt text
+converse() {
+  local sid
+  sid=$(rpc session/create "{\"request\":{\"workspaceId\":\"$workspace\"}}" | value '["sessionId"]')
+  [ -n "$sid" ] || fail "session/create returned no sessionId"
+  prompt_now "$sid" "[{\"type\":\"text\",\"text\":\"$2\"}]"
+  sleep 1
+  rpc session/rename "{\"request\":{\"sessionId\":\"$sid\",\"title\":\"$1\"}}" >/dev/null
+  say "  $1"
+}
+
+# The conversation the photo shot is of: a layout sketched on paper, sent as an
+# image the way the app sends one. Driven from here rather than through the
+# system photo picker, which runs out of process and does not take synthetic
+# taps — and what the shot is of is the sketch sitting in the transcript, not
+# the moment of choosing it.
+# $1 title, $2 prompt text
+converse_with_sketch() {
+  local sid content vision
+  [ -f "$scratch/rowel-sketch.png" ] || swift Tools/Sketch.swift "$scratch/rowel-sketch.png"
+  sid=$(rpc session/create "{\"request\":{\"workspaceId\":\"$workspace\"}}" | value '["sessionId"]')
+  [ -n "$sid" ] || fail "session/create returned no sessionId"
+  # The default model refuses an image outright — "does not support image
+  # input" — so ask the harness which of its models can take one rather than
+  # naming a model here that a different machine may not have.
+  vision=$(rpc session/modelCatalog '{}' | python3 -c '
+import json, re, sys
+pairs = [(g["id"], m["id"]) for g in json.load(sys.stdin)["result"]["value"].get("groups", [])
+         for m in g.get("models", []) if re.search("vision", m["id"], re.I)]
+print(json.dumps({"provider": pairs[0][0], "model": pairs[0][1]}) if pairs else "")
+')
+  [ -n "$vision" ] || fail "this harness has no model that accepts an image; the sketch shot needs one"
+  rpc session/selectModel "$(python3 -c 'import json,sys; v=json.loads(sys.argv[2]); print(json.dumps({"request": {"sessionId": sys.argv[1], **v}}))' "$sid" "$vision")" >/dev/null
+  content=$(python3 - "$2" "$scratch/rowel-sketch.png" <<'PY'
+import base64, json, sys
+data = base64.b64encode(open(sys.argv[2], 'rb').read()).decode()
+print(json.dumps([
+    {"type": "text", "text": sys.argv[1]},
+    {"type": "image", "mediaType": "image/png", "data": data, "name": "sketch.png"},
+]))
+PY
+)
+  prompt_now "$sid" "$content"
+  sleep 1
+  rpc session/rename "{\"request\":{\"sessionId\":\"$sid\",\"title\":\"$1\"}}" >/dev/null
+  say "  $1"
+}
+
+seed_conversations() {
+  # Every conversation starts in the workspace, which is what puts it in the
+  # Mac's sidebar and under its header in the app.
+  workspace=$(rpc workspace/create "{\"request\":{\"path\":\"$sample\"}}" | value '["workspace"]["workspaceId"]')
+  [ -n "$workspace" ] || fail "workspace/create returned no workspace"
+  rpc workspace/rename "{\"request\":{\"workspaceId\":\"$workspace\",\"title\":\"checkout-api\"}}" >/dev/null
+  say "starting conversations"
+  converse "Add CAD and AUD to the currency table" \
+    "Read rates.py and test_rates.py, then add CAD and AUD with correct rates and a check for each. Run python3 test_rates.py when you are done. Work only inside this directory — do not inspect anything else on this machine."
+  converse "Why does the webhook retry twice?" \
+    "Read README.md and explain in two sentences what this service is for. Work only inside this directory."
+  converse "Build the checkout health dashboard" \
+    "Plan this out with a todo list first, then do it. Read metrics.json, work out the trends that matter, and build dashboard.html: a single self-contained dark-mode page with inline SVG charts and a verdict banner. No external assets. Check it renders with node, then tell me what the data says. Work only inside this directory — do not inspect anything else on this machine."
+  converse_with_sketch "Match the dashboard to this sketch" \
+    "I sketched the layout I want on paper. Rework dashboard.html to match it: header up top, three metric cards in a row, one wide chart underneath. Keep the data and the dark theme. Work only inside this directory."
+  # The one that has to stop and ask.
+  #
+  # It asks *before* pushing rather than after failing to. Letting the push run
+  # was the original idea, and it produced a screenshot of the machine instead
+  # of the app: the remote authenticated with whatever SSH key was on the Mac
+  # and GitHub answered "Hi <owner>", and when that failed the agent went
+  # looking — `git config --list`, `~/.ssh/config` — and put the operator's
+  # work hosts in a terminal card. This harness runs on somebody's real
+  # computer with real read access, so the fix is not to sanitise what it finds
+  # but to give it nothing to investigate.
+  converse "Ship the currency fix" \
+    "Initialise a git repo here and commit everything with the message 'Add CAD and AUD support'. Then stop and ask me before pushing anything — I want to confirm the remote with you first. Do not inspect any git or SSH configuration."
+  say "conversations queued"
+}
+
+# Wait until the conversations have stopped working.
+#
+# This used to be `sleep 120`, which is either too long or too short and has no
+# way of being right: one of these jobs plans, reads, writes a page and checks
+# it renders. Ask instead. The one exception is deliberate — the conversation
+# that has to stop and ask a question stays "running" while it waits, and
+# waiting for it would be waiting forever — so this stops when everything else
+# has settled.
+settle() {
+  local waited=0 busy
+  printf 'waiting for the conversations to finish '
+  while [ "$waited" -lt 900 ]; do
+    busy=$(rpc session/list '{"_request":{}}' | python3 -c '
+import json, sys
+items = json.load(sys.stdin)["result"]["value"]["items"]
+# The approval one is meant to sit there waiting; it is not unfinished work.
+print(sum(1 for s in items
+          if s.get("running") and s.get("projections", {}).get("values", {}).get("title") != "Ship the currency fix"))
+' 2>/dev/null || echo 1)
+    [ "$busy" = "0" ] && { echo ' done'; return; }
+    printf '.'
+    sleep 10
+    waited=$((waited + 10))
+  done
+  echo ' giving up on the wait'
+}
+
+# --- The shots --------------------------------------------------------------
+
+take() {
+  local udid
+  udid=$(xcrun simctl list devices available | grep -m1 "$device (" | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/')
+  [ -n "$udid" ] || fail "no simulator called '$device'."
+  xcrun simctl boot "$udid" 2>/dev/null || true
+  open -a Simulator
+
+  # A sketch to attach, so the photo shot has something to be of.
+  [ -f "$scratch/rowel-sketch.png" ] || swift Tools/Sketch.swift "$scratch/rowel-sketch.png"
+  xcrun simctl addmedia "$udid" "$scratch/rowel-sketch.png" 2>/dev/null || true
+
+  xcodegen generate --spec project.yml >/dev/null
+
+  # Hand the run a fresh invitation rather than telling the operator to pair by
+  # hand and carrying on either way. A stale pairing does not announce itself —
+  # the app simply never reaches the machine — and the shots that come out of a
+  # run like that are of an app with nothing in it, which is exactly the failure
+  # this whole file exists to avoid.
+  #
+  # `TEST_RUNNER_` is not decoration: xcodebuild passes the test process only
+  # variables with that prefix, and strips it on the way through.
+  local link
+  link=$(ROWEL_HOME="$home/rowel-home" node "$root/bridle/lib/cli.js" pair --link 2>/dev/null \
+    | sed -n 's/^link: *//p')
+  [ -n "$link" ] || fail "could not mint a pairing invitation for $home/rowel-home"
+  export TEST_RUNNER_ROWEL_PAIR_LINK="$link"
+
+  # `pipefail`, and no `|| true`. The pipe ends in a grep, so without both a
+  # build that never ran and a suite that failed every case are indistinguishable
+  # from success — which is how a set of screenshots of an empty app got as far
+  # as the App Store.
+  set +e
+  set -o pipefail
+  TEST_RUNNER_ROWEL_SHOTS_OUT="$root/marketing/shots" \
+  xcodebuild test -project Rowel.xcodeproj -scheme RowelUI \
+    -destination "id=$udid" -only-testing:RowelUITests/Screenshots \
+    | grep -E "Test Case|error:"
+  local shot_status=$?
+  set +o pipefail
+  set -e
+  [ "$shot_status" -eq 0 ] || fail "the screenshot run failed; the files on disk are from an earlier take"
+
+  # The artifact the dashboard conversation built, rendered.
+  chrome="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  if [ -x "$chrome" ] && [ -f "$sample/dashboard.html" ]; then
+    "$chrome" --headless --disable-gpu --hide-scrollbars --window-size=1600,1200 \
+      --screenshot="$root/marketing/shots/dashboard.png" \
+      "file://$sample/dashboard.html" >/dev/null 2>&1
+    # Crop from the top, not the middle. `sips -c` centres, which sliced the
+    # headings off the three summary cards and left their explanatory text
+    # floating above the chart — the one image on the page that is supposed to
+    # show what the agent produced, looking like a layout that had gone wrong.
+    # 860 is where the page's own content ends.
+    magick "$root/marketing/shots/dashboard.png" -crop 1600x860+0+0 +repage \
+      "$root/marketing/shots/dashboard.png"
+  fi
+
+  # Web copies, small enough for a page to carry.
+  #
+  # `--resampleWidth`, not `-Z`. `-Z` caps the *longest* edge, and these are
+  # portrait, so it capped the height instead and left the width at a third of
+  # what the page needs. The widest slot on the front page is 380 CSS px, which
+  # a retina screen draws at 760, so 900 wide is the number.
+  #
+  # WebP, because the page is nothing but screenshots and one of them is a
+  # notification over a photograph, which PNG cannot compress: the set was
+  # 2.1 MB as PNG and is 400 KB as WebP at the same pixels. The page references
+  # `.webp` directly rather than through a `<picture>` fallback — every browser
+  # that can run the app's own marketing has supported it for years, and a
+  # second copy of every image is a second thing to keep in step.
+  command -v cwebp >/dev/null \
+    || fail "cwebp is not installed, and the site references .webp — brew install webp"
+  mkdir -p "$root/site/public/_/shots"
+  local tmp="$scratch/rowel-web-shot.png"
+  # Only what `site/public/index.html` shows; a copy nothing links to is a
+  # file that goes stale in silence.
+  for n in push approval conversation trace sessions photo; do
+    cp "$root/marketing/shots/$n.png" "$tmp"
+    sips --resampleWidth 900 "$tmp" >/dev/null
+    cwebp -q 85 -quiet "$tmp" -o "$root/site/public/_/shots/$n.webp"
+  done
+  rm -f "$tmp"
+  say "shots in marketing/shots, web copies in site/public/_/shots"
+}
+
+case "${1:-}" in
+  --seed) start_harness; start_bridle; seed_repo; seed_conversations ;;
+  # `settle` here too, not only in the full pipeline. Shooting a conversation
+  # that is still streaming does not produce a worse photograph — it produces
+  # no photograph: the transcript never leaves "Loading this conversation…",
+  # the driver spends 147 seconds discovering that, and the failure names the
+  # conversation rather than the reason. Re-running the shots alone is the
+  # common case, and it was the one path that skipped the wait.
+  --shots) settle; take ;;
+  --up) start_harness; start_bridle ;;
+  *) start_harness; start_bridle; seed_repo; seed_conversations; settle; take ;;
+esac
