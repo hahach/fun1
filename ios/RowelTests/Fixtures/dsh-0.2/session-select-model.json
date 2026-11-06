@@ -1,0 +1,20 @@
+{
+  "endpoint": "session/selectModel",
+  "args": {
+    "request": {
+      "sessionId": "session-8dce473f-5132-4d16-8230-0f128f60a0bf",
+      "provider": "deepseek-official",
+      "model": "deepseek-flash"
+    }
+  },
+  "result": {
+    "ok": true,
+    "value": {
+      "selected": {
+        "provider": "deepseek-official",
+        "model": "deepseek-flash",
+        "reasoningEffort": "high"
+      }
+    }
+  }
+}
