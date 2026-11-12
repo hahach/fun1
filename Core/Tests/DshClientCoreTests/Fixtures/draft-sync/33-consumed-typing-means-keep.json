@@ -1,0 +1,54 @@
+{
+  "id": "33-consumed-typing-means-keep",
+  "note": "§13.2-2：询问条在时继续输入即视为保留 → 收起询问条并正常上行",
+  "initial": {
+    "mode": "remote",
+    "isBlank": false,
+    "cwd": null,
+    "localText": "draft2"
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 900
+    },
+    {
+      "type": "userEdited",
+      "text": "draft3"
+    },
+    {
+      "type": "debounceElapsed"
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": null
+    },
+    {
+      "type": "showConsumed",
+      "remote": {
+        "text": "",
+        "updatedAt": 900
+      }
+    },
+    {
+      "type": "clearConsumed"
+    },
+    {
+      "type": "set",
+      "text": "draft3",
+      "base": 900,
+      "cwd": null
+    }
+  ],
+  "expectState": {
+    "localText": "draft3",
+    "pending": true,
+    "suspended": false
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "id": "22-conflict-overwrite-local",
+  "note": "§13.3：冲突态下「用本机覆盖」→ 以远端 updatedAt 为 base 重发本机文本、解除挂起",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": ""
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 0
+    },
+    {
+      "type": "userEdited",
+      "text": "mine"
+    },
+    {
+      "type": "debounceElapsed"
+    },
+    {
+      "type": "writeFailed",
+      "error": "conflict",
+      "remote": {
+        "text": "theirs",
+        "updatedAt": 400
+      }
+    },
+    {
+      "type": "remoteRead",
+      "text": "theirs",
+      "updatedAt": 400
+    },
+    {
+      "type": "userAskedOverwrite"
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "set",
+      "text": "mine",
+      "base": 0,
+      "cwd": "/x"
+    },
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "showConflict",
+      "remote": {
+        "text": "theirs",
+        "updatedAt": 400
+      }
+    },
+    {
+      "type": "clearConflict"
+    },
+    {
+      "type": "set",
+      "text": "mine",
+      "base": 400,
+      "cwd": "/x"
+    }
+  ],
+  "expectState": {
+    "base": 400,
+    "conflict": false,
+    "suspended": false,
+    "pending": true,
+    "localText": "mine"
+  }
+}

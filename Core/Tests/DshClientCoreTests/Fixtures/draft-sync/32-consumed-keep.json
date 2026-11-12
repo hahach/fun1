@@ -1,0 +1,51 @@
+{
+  "id": "32-consumed-keep",
+  "note": "§13.2-2：用户选「保留」→ 以墓碑时刻为 base 上行本机草稿",
+  "initial": {
+    "mode": "remote",
+    "isBlank": false,
+    "cwd": null,
+    "localText": "draft2"
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 900
+    },
+    {
+      "type": "userChoseKeepConsumed"
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": null
+    },
+    {
+      "type": "showConsumed",
+      "remote": {
+        "text": "",
+        "updatedAt": 900
+      }
+    },
+    {
+      "type": "clearConsumed"
+    },
+    {
+      "type": "set",
+      "text": "draft2",
+      "base": 900,
+      "cwd": null
+    }
+  ],
+  "expectState": {
+    "localText": "draft2",
+    "base": 900,
+    "pending": true,
+    "suspended": false
+  }
+}

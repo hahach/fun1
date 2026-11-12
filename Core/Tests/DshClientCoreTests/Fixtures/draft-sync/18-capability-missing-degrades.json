@@ -1,0 +1,45 @@
+{
+  "id": "18-capability-missing-degrades",
+  "note": "§13.2-11：draft/* 不可用 → 该主机转纯本地，不报错、不再产生任何 draft 动作",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": ""
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "capabilityMissing"
+    },
+    {
+      "type": "userEdited",
+      "text": "x"
+    },
+    {
+      "type": "debounceElapsed"
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "degrade"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    }
+  ],
+  "expectState": {
+    "mode": "localOnly",
+    "dirty": false,
+    "pending": false
+  }
+}

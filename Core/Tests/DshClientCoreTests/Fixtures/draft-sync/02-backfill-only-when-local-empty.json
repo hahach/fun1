@@ -1,0 +1,52 @@
+{
+  "id": "02-backfill-only-when-local-empty",
+  "note": "§13.2-1/2：本机空时回填远端，并以其 updatedAt 为 base 继续镜像",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": ""
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "远端草稿",
+      "updatedAt": 100
+    },
+    {
+      "type": "userEdited",
+      "text": "rem!"
+    },
+    {
+      "type": "debounceElapsed"
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "backfill",
+      "text": "远端草稿"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "set",
+      "text": "rem!",
+      "base": 100,
+      "cwd": "/x"
+    }
+  ],
+  "expectState": {
+    "localText": "rem!",
+    "base": 100,
+    "dirty": true,
+    "conflict": false
+  }
+}

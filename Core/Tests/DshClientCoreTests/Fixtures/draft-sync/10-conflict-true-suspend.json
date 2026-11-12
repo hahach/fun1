@@ -1,0 +1,95 @@
+{
+  "id": "10-conflict-true-suspend",
+  "note": "§13.2-6④ + §13.2-7：真冲突 → 挂起该会话上行并显示提示条，之后的编辑/清空都不上行",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": ""
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 0
+    },
+    {
+      "type": "userEdited",
+      "text": "mine"
+    },
+    {
+      "type": "debounceElapsed"
+    },
+    {
+      "type": "writeFailed",
+      "error": "conflict",
+      "remote": {
+        "text": "theirs",
+        "updatedAt": 400
+      }
+    },
+    {
+      "type": "remoteRead",
+      "text": "theirs",
+      "updatedAt": 400
+    },
+    {
+      "type": "userEdited",
+      "text": "mine2"
+    },
+    {
+      "type": "debounceElapsed"
+    },
+    {
+      "type": "userCleared"
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "set",
+      "text": "mine",
+      "base": 0,
+      "cwd": "/x"
+    },
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "showConflict",
+      "remote": {
+        "text": "theirs",
+        "updatedAt": 400
+      }
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    }
+  ],
+  "expectState": {
+    "base": 400,
+    "localText": "",
+    "conflict": true,
+    "suspended": true,
+    "pending": false
+  }
+}

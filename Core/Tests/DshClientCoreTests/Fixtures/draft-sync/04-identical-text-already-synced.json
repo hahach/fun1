@@ -1,0 +1,50 @@
+{
+  "id": "04-identical-text-already-synced",
+  "note": "§13.2-6②：两端内容相同＝已落地，不写；之后的新编辑才上行",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": "same"
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "same",
+      "updatedAt": 200
+    },
+    {
+      "type": "userEdited",
+      "text": "same2"
+    },
+    {
+      "type": "debounceElapsed"
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "set",
+      "text": "same2",
+      "base": 200,
+      "cwd": "/x"
+    }
+  ],
+  "expectState": {
+    "base": 200,
+    "localText": "same2",
+    "dirty": true
+  }
+}

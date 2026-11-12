@@ -1,0 +1,51 @@
+{
+  "id": "16-upload-limit-rejects-over-60kib",
+  "note": "§13.2-10：UTF-8 字节超 60 KiB（61441）不上行、不截断，本地保留",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": ""
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 0
+    },
+    {
+      "type": "userEdited",
+      "text": {
+        "repeat": "a",
+        "count": 61441
+      }
+    },
+    {
+      "type": "debounceElapsed"
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "tooLarge",
+      "bytes": 61441
+    }
+  ],
+  "expectState": {
+    "pending": false,
+    "dirty": true,
+    "base": 0
+  }
+}

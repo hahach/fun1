@@ -1,0 +1,59 @@
+{
+  "id": "03-both-nonempty-conflict",
+  "note": "§13.2-2/3：本机非空不回填；两端都非空且不同 → 冲突态、不写，且冲突期不上行",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": "mine"
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "theirs",
+      "updatedAt": 150
+    },
+    {
+      "type": "userEdited",
+      "text": "mine2"
+    },
+    {
+      "type": "debounceElapsed"
+    },
+    {
+      "type": "userCleared"
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "showConflict",
+      "remote": {
+        "text": "theirs",
+        "updatedAt": 150
+      }
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    }
+  ],
+  "expectState": {
+    "localText": "",
+    "base": 150,
+    "conflict": true,
+    "suspended": true,
+    "dirty": false
+  }
+}

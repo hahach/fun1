@@ -1,0 +1,44 @@
+{
+  "id": "24-offline-draft-flushed-after-read",
+  "note": "§13.1-1：离线期间的本机文本在读到 base 后立即补传（先读后写放开后的第一次写）",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": "offline"
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 0
+    },
+    {
+      "type": "debounceElapsed"
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "set",
+      "text": "offline",
+      "base": 0,
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    }
+  ],
+  "expectState": {
+    "base": 0,
+    "localText": "offline",
+    "pending": true,
+    "dirty": true
+  }
+}

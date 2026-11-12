@@ -1,0 +1,50 @@
+{
+  "id": "31-consumed-clear",
+  "note": "§13.2-2：用户选「清空」→ 清本机草稿并回填空串，不上行",
+  "initial": {
+    "mode": "remote",
+    "isBlank": false,
+    "cwd": null,
+    "localText": "draft2"
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 900
+    },
+    {
+      "type": "userChoseClearConsumed"
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": null
+    },
+    {
+      "type": "showConsumed",
+      "remote": {
+        "text": "",
+        "updatedAt": 900
+      }
+    },
+    {
+      "type": "clearConsumed"
+    },
+    {
+      "type": "backfill",
+      "text": ""
+    }
+  ],
+  "expectState": {
+    "localText": "",
+    "syncedText": "",
+    "base": 900,
+    "suspended": false,
+    "pending": false
+  }
+}

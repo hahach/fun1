@@ -1,0 +1,94 @@
+{
+  "id": "06-timeout-retry-backoff",
+  "note": "§13.2-5：8 s 超时按失败处理，3 s／10 s 各重试一次，仍失败标脏且不再自动重发",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": ""
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 0
+    },
+    {
+      "type": "userEdited",
+      "text": "t"
+    },
+    {
+      "type": "debounceElapsed"
+    },
+    {
+      "type": "writeTimedOut"
+    },
+    {
+      "type": "retryElapsed"
+    },
+    {
+      "type": "writeTimedOut"
+    },
+    {
+      "type": "retryElapsed"
+    },
+    {
+      "type": "writeTimedOut"
+    },
+    {
+      "type": "retryElapsed"
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "set",
+      "text": "t",
+      "base": 0,
+      "cwd": "/x"
+    },
+    {
+      "type": "scheduleRetry",
+      "after": 3
+    },
+    {
+      "type": "set",
+      "text": "t",
+      "base": 0,
+      "cwd": "/x"
+    },
+    {
+      "type": "scheduleRetry",
+      "after": 10
+    },
+    {
+      "type": "set",
+      "text": "t",
+      "base": 0,
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    }
+  ],
+  "expectState": {
+    "pending": false,
+    "dirty": true,
+    "base": 0
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "id": "25-conflict-empty-remote-resends-local",
+  "note": "§13.2-6③″：写撞上「远端没有草稿行」（text 空、updatedAt 0）时本机文本即真相，以 0 为 base 重发一次，不摆空远端冲突条",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": ""
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 0
+    },
+    {
+      "type": "userEdited",
+      "text": "mine"
+    },
+    {
+      "type": "debounceElapsed"
+    },
+    {
+      "type": "writeFailed",
+      "error": "conflict",
+      "remote": {
+        "text": "",
+        "updatedAt": 0
+      }
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 0
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "set",
+      "text": "mine",
+      "base": 0,
+      "cwd": "/x"
+    },
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "set",
+      "text": "mine",
+      "base": 0,
+      "cwd": "/x"
+    }
+  ],
+  "expectState": {
+    "localText": "mine",
+    "base": 0,
+    "pending": true,
+    "conflict": false,
+    "suspended": false
+  }
+}
