@@ -1,0 +1,69 @@
+name: ios-ipa-tests
+
+# 单元测试（iOS 模拟器）。与 ios-ipa 分开成一条工作流：
+# 出包作业只负责 archive，测试成败先只上报、不拦出包（稳定全绿后再改成阻塞）。
+# 只在 fun1 上手动触发；私有仓不编译。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-ipa-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    name: unit tests (macos simulator)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cache spm
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            ios/build/spm
+          key: spm-ios-tests-${{ hashFiles('Core/Package.swift', 'Core/Package.resolved') }}
+          restore-keys: spm-ios-
+
+      - name: xcodegen
+        run: |
+          xcodebuild -version
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            curl -fsSL -o xcodegen.zip https://github.com/yonaskolb/XcodeGen/releases/latest/download/xcodegen.zip
+            unzip -q xcodegen.zip
+            echo "$PWD/xcodegen/bin" >> "$GITHUB_PATH"
+          fi
+          "$PWD/xcodegen/bin/xcodegen" --version 2>/dev/null || xcodegen --version
+
+      - name: generate project
+        run: xcodegen generate
+
+      # 取「最新 iOS runtime 里的第一台 iPhone」：部署目标跟着最新 iOS 走。
+      - name: pick simulator
+        id: sim
+        run: |
+          UDID=$(python3 Tools/pick-simulator.py)
+          echo "simulator=$UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: unit tests
+        run: |
+          xcodebuild test \
+            -project Rowel.xcodeproj \
+            -scheme Rowel \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build/dd-tests \
+            -clonedSourcePackagesDirPath build/spm \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""

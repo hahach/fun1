@@ -1,0 +1,48 @@
+{
+  "id": "34-consumed-cleared-by-empty-input",
+  "note": "§13.2-2：询问条挂着时输入被清空（发送或删光）→ 收起询问条并按清空流程走，不留一条悬在空输入框上方",
+  "initial": {
+    "mode": "remote",
+    "isBlank": false,
+    "cwd": null,
+    "localText": "draft2"
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 900
+    },
+    {
+      "type": "userCleared"
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": null
+    },
+    {
+      "type": "showConsumed",
+      "remote": {
+        "text": "",
+        "updatedAt": 900
+      }
+    },
+    {
+      "type": "clearConsumed"
+    },
+    {
+      "type": "none"
+    }
+  ],
+  "expectState": {
+    "localText": "",
+    "suspended": false,
+    "pending": false,
+    "base": 900
+  }
+}

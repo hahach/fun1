@@ -1,0 +1,74 @@
+{
+  "id": "05-write-success-advances-base",
+  "note": "§13.2-5：带 base 写；成功后立刻用响应 updatedAt 覆盖 base",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": ""
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 0
+    },
+    {
+      "type": "userEdited",
+      "text": "a"
+    },
+    {
+      "type": "debounceElapsed"
+    },
+    {
+      "type": "writeSucceeded",
+      "text": "a",
+      "updatedAt": 200
+    },
+    {
+      "type": "userEdited",
+      "text": "ab"
+    },
+    {
+      "type": "debounceElapsed"
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "set",
+      "text": "a",
+      "base": 0,
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "set",
+      "text": "ab",
+      "base": 200,
+      "cwd": "/x"
+    }
+  ],
+  "expectState": {
+    "base": 200,
+    "localText": "ab",
+    "dirty": true
+  }
+}

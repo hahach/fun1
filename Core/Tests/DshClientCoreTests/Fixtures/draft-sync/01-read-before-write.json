@@ -1,0 +1,52 @@
+{
+  "id": "01-read-before-write",
+  "note": "§13.2-1/4 + §13.1-1：进会话先读；读到之前去抖到点也不入队（先读后写）",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": ""
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "userEdited",
+      "text": "hello"
+    },
+    {
+      "type": "debounceElapsed"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 0
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "set",
+      "text": "hello",
+      "base": 0,
+      "cwd": "/x"
+    }
+  ],
+  "expectState": {
+    "localText": "hello",
+    "base": 0,
+    "pending": true,
+    "dirty": true,
+    "suspended": false
+  }
+}

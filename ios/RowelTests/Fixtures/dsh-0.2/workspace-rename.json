@@ -1,0 +1,22 @@
+{
+  "endpoint": "workspace/rename",
+  "args": {
+    "request": {
+      "workspaceId": "cbac518c-1d37-4ad0-9378-2af5bd5d4bf1",
+      "title": "Fixture workspace"
+    }
+  },
+  "result": {
+    "ok": true,
+    "value": {
+      "workspace": {
+        "workspaceId": "cbac518c-1d37-4ad0-9378-2af5bd5d4bf1",
+        "path": "/private/tmp/dsh-home",
+        "title": "Fixture workspace",
+        "sessionIds": [],
+        "createdAt": "2026-10-09T13:28:24.098Z",
+        "updatedAt": "2026-10-09T13:28:24.134Z"
+      }
+    }
+  }
+}

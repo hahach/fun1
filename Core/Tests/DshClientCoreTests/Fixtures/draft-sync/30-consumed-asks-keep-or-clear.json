@@ -1,0 +1,39 @@
+{
+  "id": "30-consumed-asks-keep-or-clear",
+  "note": "§13.2-2：进会话读到墓碑而本机另有草稿 → 问「清空／保留」，决定前不上行",
+  "initial": {
+    "mode": "remote",
+    "isBlank": false,
+    "cwd": null,
+    "localText": "draft2"
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 900
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": null
+    },
+    {
+      "type": "showConsumed",
+      "remote": {
+        "text": "",
+        "updatedAt": 900
+      }
+    }
+  ],
+  "expectState": {
+    "localText": "draft2",
+    "suspended": true,
+    "pending": false,
+    "conflict": false
+  }
+}

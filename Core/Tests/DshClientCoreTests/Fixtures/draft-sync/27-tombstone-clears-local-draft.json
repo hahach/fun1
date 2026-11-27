@@ -1,0 +1,54 @@
+{
+  "id": "27-tombstone-clears-local-draft",
+  "note": "§13.2-2：远端回墓碑（text 空、updatedAt 900）且本机没有新编辑 → 认定草稿已被消费：清本机、回填空串、不上行",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": "草稿A"
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "草稿A",
+      "updatedAt": 500
+    },
+    {
+      "type": "refresh"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 900
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "backfill",
+      "text": ""
+    }
+  ],
+  "expectState": {
+    "localText": "",
+    "syncedText": "",
+    "base": 900,
+    "conflict": false,
+    "suspended": false,
+    "pending": false,
+    "dirty": false
+  }
+}

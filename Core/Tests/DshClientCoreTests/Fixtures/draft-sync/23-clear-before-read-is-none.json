@@ -1,0 +1,41 @@
+{
+  "id": "23-clear-before-read-is-none",
+  "note": "§13.1-1：还没读到 base 时清空不入队；读到空草稿后也不补发",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": ""
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "userCleared"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 0
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    }
+  ],
+  "expectState": {
+    "localText": "",
+    "base": 0,
+    "dirty": false,
+    "pending": false
+  }
+}

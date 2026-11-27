@@ -1,0 +1,82 @@
+{
+  "id": "07-conflict-prefix-rebase",
+  "note": "§13.2-6③′：远端是本端待写文本的前缀 → 以远端 updatedAt 为重基重发一次，不置冲突态",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": ""
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 0
+    },
+    {
+      "type": "userEdited",
+      "text": "hello world"
+    },
+    {
+      "type": "debounceElapsed"
+    },
+    {
+      "type": "writeFailed",
+      "error": "conflict",
+      "remote": {
+        "text": "hello",
+        "updatedAt": 150
+      }
+    },
+    {
+      "type": "remoteRead",
+      "text": "hello",
+      "updatedAt": 150
+    },
+    {
+      "type": "writeSucceeded",
+      "text": "hello world",
+      "updatedAt": 300
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "set",
+      "text": "hello world",
+      "base": 0,
+      "cwd": "/x"
+    },
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "set",
+      "text": "hello world",
+      "base": 150,
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    }
+  ],
+  "expectState": {
+    "base": 300,
+    "suspended": false,
+    "conflict": false,
+    "dirty": false
+  }
+}

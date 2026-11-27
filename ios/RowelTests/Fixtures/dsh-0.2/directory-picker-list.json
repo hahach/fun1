@@ -1,0 +1,56 @@
+{
+  "endpoint": "directoryPicker/list",
+  "args": {},
+  "result": {
+    "ok": true,
+    "value": {
+      "path": "/tmp/dsh-home/user",
+      "home": "/tmp/dsh-home/user",
+      "crumbs": [
+        {
+          "name": "/",
+          "path": "/",
+          "hidden": false
+        },
+        {
+          "name": "var",
+          "path": "/var",
+          "hidden": false
+        },
+        {
+          "name": "folders",
+          "path": "/var/folders",
+          "hidden": false
+        },
+        {
+          "name": "elsewhere",
+          "path": "/tmp/elsewhere",
+          "hidden": false
+        },
+        {
+          "name": "dsh-home",
+          "path": "/tmp/dsh-home",
+          "hidden": false
+        },
+        {
+          "name": "user",
+          "path": "/tmp/dsh-home/user",
+          "hidden": false
+        }
+      ],
+      "entries": [
+        {
+          "name": ".cache",
+          "path": "/tmp/dsh-home/user/.cache",
+          "hidden": true
+        },
+        {
+          "name": "checkout-api",
+          "path": "/tmp/dsh-home/user/checkout-api",
+          "hidden": false
+        }
+      ],
+      "truncated": false
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "endpoint": "workspace/create",
+  "args": {
+    "request": {
+      "path": "/tmp/dsh-home"
+    }
+  },
+  "result": {
+    "ok": true,
+    "value": {
+      "workspace": {
+        "workspaceId": "cbac518c-1d37-4ad0-9378-2af5bd5d4bf1",
+        "path": "/private/tmp/dsh-home",
+        "title": "rowel-e2e-dsh-6Sli8r",
+        "sessionIds": [],
+        "createdAt": "2026-10-09T13:28:24.098Z",
+        "updatedAt": "2026-10-09T13:28:24.098Z"
+      },
+      "created": true
+    }
+  }
+}

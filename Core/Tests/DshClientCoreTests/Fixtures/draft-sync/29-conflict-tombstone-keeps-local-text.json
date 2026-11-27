@@ -1,0 +1,75 @@
+{
+  "id": "29-conflict-tombstone-keeps-local-text",
+  "note": "§13.2-6③″：写撞上墓碑（远端 text 空、updatedAt>0，别处已发送）时本机文本即真相，以墓碑时刻为 base 重发一次，不摆空远端冲突条",
+  "initial": {
+    "mode": "remote",
+    "isBlank": false,
+    "cwd": null,
+    "localText": ""
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 0
+    },
+    {
+      "type": "userEdited",
+      "text": "1"
+    },
+    {
+      "type": "debounceElapsed"
+    },
+    {
+      "type": "writeFailed",
+      "error": "conflict",
+      "remote": {
+        "text": "",
+        "updatedAt": 900
+      }
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 900
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": null
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "set",
+      "text": "1",
+      "base": 0,
+      "cwd": null
+    },
+    {
+      "type": "get",
+      "cwd": null
+    },
+    {
+      "type": "set",
+      "text": "1",
+      "base": 900,
+      "cwd": null
+    }
+  ],
+  "expectState": {
+    "localText": "1",
+    "base": 900,
+    "pending": true,
+    "conflict": false,
+    "suspended": false
+  }
+}

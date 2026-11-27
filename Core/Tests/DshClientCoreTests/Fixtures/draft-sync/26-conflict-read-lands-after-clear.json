@@ -1,0 +1,78 @@
+{
+  "id": "26-conflict-read-lands-after-clear",
+  "note": "§13.2-6⑤：冲突回读还没回来本机就清空了，回读结果到达时两侧都空 → 直接对齐并收起提示条",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": ""
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 0
+    },
+    {
+      "type": "userEdited",
+      "text": "mine"
+    },
+    {
+      "type": "debounceElapsed"
+    },
+    {
+      "type": "writeFailed",
+      "error": "conflict",
+      "remote": {
+        "text": "",
+        "updatedAt": 0
+      }
+    },
+    {
+      "type": "userCleared"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 0
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "set",
+      "text": "mine",
+      "base": 0,
+      "cwd": "/x"
+    },
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "none"
+    },
+    {
+      "type": "clearConflict"
+    }
+  ],
+  "expectState": {
+    "localText": "",
+    "base": 0,
+    "conflict": false,
+    "suspended": false,
+    "pending": false
+  }
+}

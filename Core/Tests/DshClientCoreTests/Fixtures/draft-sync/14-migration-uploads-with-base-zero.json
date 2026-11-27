@@ -1,0 +1,38 @@
+{
+  "id": "14-migration-uploads-with-base-zero",
+  "note": "§13.2-9：本机旧草稿以 base 0 一次性上行（远端确为空时）",
+  "initial": {
+    "mode": "remote",
+    "isBlank": true,
+    "cwd": "/x",
+    "localText": "",
+    "migratingText": "旧稿"
+  },
+  "events": [
+    {
+      "type": "enterSession"
+    },
+    {
+      "type": "remoteRead",
+      "text": "",
+      "updatedAt": 0
+    }
+  ],
+  "expect": [
+    {
+      "type": "get",
+      "cwd": "/x"
+    },
+    {
+      "type": "set",
+      "text": "旧稿",
+      "base": 0,
+      "cwd": "/x"
+    }
+  ],
+  "expectState": {
+    "base": 0,
+    "pending": true,
+    "localText": ""
+  }
+}
